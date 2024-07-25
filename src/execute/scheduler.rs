@@ -148,7 +148,7 @@ impl Scheduler {
                 .iter()
                 .enumerate()
                 .rev()
-                .find(|(_, job)| job.machine.ram.bytes() < ram_available)
+                .find(|(_, job)| job.machine.ram.bytes() <= ram_available)
                 .map(|(index, _)| index);
 
             if let Some(job_index) = job_index {
