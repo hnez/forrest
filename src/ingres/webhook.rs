@@ -203,15 +203,17 @@ async fn workflow_job_handler(
         _ => return,
     };
 
-    let owner = match event.sender {
-        Some(author) => author.login,
+    let repository = match event.repository {
+        Some(repo) => repo,
         None => return,
     };
 
-    let repo_name = match event.repository {
-        Some(repo) => repo.name,
+    let owner = match repository.owner {
+        Some(owner) => owner.login,
         None => return,
     };
+
+    let repo_name = repository.name;
 
     debug!("Got workflow_job webhook event for {owner}/{repo_name}!");
 
