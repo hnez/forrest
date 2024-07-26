@@ -92,6 +92,7 @@ The main ingredients to set up Forrest are:
     app_id: <APP_ID>
     jwt_key_file: key.pem
     webhook_secret: <WEBHOOK_SECRET>
+    polling_interval: 15m
 
   machine_templates:
     small: &machine-small

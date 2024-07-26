@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
 
 use log::{debug, error, info};
 
@@ -133,8 +132,7 @@ impl Poller {
                 error!("Failed to poll for installations: {e}");
             }
 
-            // TODO: make configurable
-            tokio::time::sleep(Duration::from_secs(15 * 60)).await;
+            tokio::time::sleep(self.config.github.polling_interval).await;
         }
     }
 }
