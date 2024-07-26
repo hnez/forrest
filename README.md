@@ -124,12 +124,10 @@ jobs:
       - name: Persist the disk image
         env:
           PERSISTENCE_TOKEN: ${{ secrets.PERSISTENCE_TOKEN }}
+        if: ${{ env.PERSISTENCE_TOKEN != ''  }}
         run: |
-          if [ -n "$PERSISTENCE_TOKEN" ]
-          then
-            sudo fstrim /
-            echo "$PERSISTENCE_TOKEN" > ~/config/persist
-          fi
+          sudo fstrim /
+          echo "$PERSISTENCE_TOKEN" > ~/config/persist
 ```
 
 You may notice that the job does a lot of setup and post-processing.
