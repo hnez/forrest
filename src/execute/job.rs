@@ -15,13 +15,9 @@ use tokio::task;
 use super::Scheduler;
 use crate::config::MachineConfig;
 
-mod cloud_init;
 mod config_fs;
-mod scripts;
 
-use cloud_init::CloudInit;
 use config_fs::ConfigFs;
-use scripts::{JOB, SETUP};
 
 const QEMU_ARGS: &[&[&str]] = &[
     &["-enable-kvm"],
@@ -45,7 +41,7 @@ const QEMU_ARGS: &[&[&str]] = &[
     ],
     &[
         "-drive",
-        "if=virtio,format=raw,discard=unmap,cache=unsafe,file=cloud-config.img",
+        "if=virtio,format=raw,discard=unmap,cache=unsafe,file=cloud-init.img",
     ],
     &[
         "-drive",
@@ -55,6 +51,8 @@ const QEMU_ARGS: &[&[&str]] = &[
 
 const JOB_CONFIG_IMAGE_SIZE: u64 = 1_000_000;
 const JOB_CONFIG_IMAGE_LABEL: &str = "JOBDATA";
+const CLOUD_INIT_IMAGE_SIZE: u64 = 1_000_000;
+const CLOUD_INIT_IMAGE_LABEL: &str = "CIDATA";
 
 pub(super) struct Job {
     pub(super) owner: String,
@@ -82,7 +80,36 @@ impl Job {
             .join(&self.repo_name)
             .join(format!("{}.img", self.machine_name));
 
-        let seed_image_path = base_dir_path.join("seeds").join(&self.machine.seed);
+        let seed_dir_path = base_dir_path.join("seeds").join(&self.machine.seed);
+
+        let seed_image_path = {
+            // Search for a *.img or *.raw file in the seed directory.
+
+            let mut path = None;
+
+            for entry in std::fs::read_dir(&seed_dir_path)? {
+                let entry = entry?;
+                let meta = entry.metadata()?;
+                let name = entry.file_name();
+                let name_bytes = name.as_encoded_bytes();
+
+                if meta.is_file()
+                    && (name_bytes.ends_with(b".img") || name_bytes.ends_with(b".raw"))
+                {
+                    path = Some(entry.path());
+                    break;
+                }
+            }
+
+            path.ok_or_else(|| {
+                let message = format!(
+                    "No *.img or *.raw disk image found in seed directory {}",
+                    seed_dir_path.to_string_lossy()
+                );
+
+                std::io::Error::new(ErrorKind::NotFound, message)
+            })?
+        };
 
         let base_image = {
             if machine_image_path.is_file() {
@@ -138,32 +165,40 @@ impl Job {
                 .map_err(|e| std::io::Error::other(e.to_string()))?
         };
 
-        // We need to keep a reference to this around since the file will be
-        // deleted once it is dropped.
-        let _cloud_init = {
-            let hostname = format!(
-                "runner-{}-{}-{}",
-                &self.owner, &self.repo_name, &self.machine_name
-            );
-            let cloud_init_path = run_dir_path.join("cloud-config.img");
+        let substitutions = &[
+            ("<REPO_OWNER>", self.owner.as_str()),
+            ("<REPO_NAME>", self.repo_name.as_str()),
+            ("<MACHINE_NAME>", self.machine_name.as_str()),
+            ("JITCONFIG", jit_config.encoded_jit_config.as_str()),
+        ];
 
-            CloudInit::new(&hostname)
-                .add_user("runner", "ALL=(ALL) NOPASSWD:ALL")
-                .add_command(SETUP)
-                .finish(cloud_init_path)?
+        // We need to keep a reference to `_cloud_init` around even though
+        // we do not plan to inspect it because the file is removed once
+        // it is dropped.
+        let _cloud_init = {
+            let cloud_init_path = run_dir_path.join("cloud-init.img");
+            let cloud_init_template_path = seed_dir_path.join("cloud-init");
+
+            ConfigFs::new(
+                cloud_init_path,
+                CLOUD_INIT_IMAGE_SIZE,
+                CLOUD_INIT_IMAGE_LABEL,
+                cloud_init_template_path,
+                substitutions,
+            )?
         };
 
         let job_config = {
-            let job_script = JOB.replace("JITCONFIG", &jit_config.encoded_jit_config);
             let job_config_path = run_dir_path.join("job-config.img");
+            let job_config_template_path = seed_dir_path.join("job-config");
 
-            ConfigFs::builder(
+            ConfigFs::new(
                 job_config_path,
                 JOB_CONFIG_IMAGE_SIZE,
                 JOB_CONFIG_IMAGE_LABEL,
+                job_config_template_path,
+                substitutions,
             )?
-            .add_file("job.sh", job_script.as_bytes())?
-            .build()?
         };
 
         let mut qemu = {

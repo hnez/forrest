@@ -2,11 +2,7 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 
 use fatfs::{format_volume, FileSystem, FormatVolumeOptions, FsOptions};
-
-pub struct ConfigFsBuilder {
-    path: PathBuf,
-    filesystem: FileSystem<std::fs::File>,
-}
+use log::warn;
 
 pub struct ConfigFs {
     path: PathBuf,
@@ -16,28 +12,14 @@ pub struct ConfigFsInspect {
     filesystem: FileSystem<std::fs::File>,
 }
 
-impl ConfigFsBuilder {
-    pub fn add_file(self, path: &str, content: &[u8]) -> std::io::Result<Self> {
-        {
-            let root_dir = self.filesystem.root_dir();
-
-            let mut file = root_dir.create_file(path)?;
-            file.truncate()?;
-            file.write_all(content)?;
-        }
-
-        Ok(self)
-    }
-
-    pub fn build(self) -> std::io::Result<ConfigFs> {
-        self.filesystem.unmount()?;
-
-        Ok(ConfigFs { path: self.path })
-    }
-}
-
 impl ConfigFs {
-    pub fn builder(path: PathBuf, size: u64, label: &str) -> std::io::Result<ConfigFsBuilder> {
+    pub fn new(
+        path: PathBuf,
+        size: u64,
+        label: &str,
+        template_path: PathBuf,
+        substitutions: &[(&str, &str)],
+    ) -> std::io::Result<Self> {
         let filesystem = {
             let mut image = std::fs::File::create_new(&path)?;
 
@@ -58,7 +40,53 @@ impl ConfigFs {
             FileSystem::new(image, FsOptions::new())?
         };
 
-        Ok(ConfigFsBuilder { path, filesystem })
+        let root_dir = filesystem.root_dir();
+
+        for entry in std::fs::read_dir(template_path)? {
+            let entry = entry?;
+            let file_name = entry.file_name();
+            let path = entry.path();
+
+            if !entry.metadata()?.is_file() {
+                warn!(
+                    "Ignoring non-file entry '{}' during assembly of config fs",
+                    path.to_string_lossy()
+                );
+                continue;
+            }
+
+            let name = match file_name.to_str() {
+                Some(name) => name,
+                None => {
+                    warn!(
+                        "Ignoring file with non-utf8 name '{}' during assembly of config fs",
+                        file_name.to_string_lossy()
+                    );
+                    continue;
+                }
+            };
+
+            // Replace placeholders in the file, like <REPO_OWNER> or <JITCONFIG>
+            // with values provided in `substitutions`.
+            // This is not an efficient or elegant solution, but a simple one.
+            // This assumes that all files that should be placed in the config
+            // filesystems are utf-8 text.
+
+            let mut content = std::fs::read_to_string(path)?;
+
+            for (from, to) in substitutions {
+                content = content.replace(from, to);
+            }
+
+            let mut file = root_dir.create_file(name)?;
+            file.truncate()?;
+            file.write_all(content.as_bytes())?;
+        }
+
+        std::mem::drop(root_dir);
+        filesystem.unmount()?;
+
+        Ok(Self { path })
     }
 
     pub fn inspect(self) -> std::io::Result<ConfigFsInspect> {

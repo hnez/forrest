@@ -50,16 +50,31 @@ The main ingredients to set up Forrest are:
   - Enable "Workflow job" events for the app.
   - Install the app for your user/app.
 
-- A base image
+- A base image and accompanying setup instructions
 
   The virtual machines need an initial image to boot from.
   The image needs to have [cloud-init](https://cloudinit.readthedocs.io/en/latest/)
   pre-installed and needs to be a raw disk image (e.g. not qcow).
 
-  The Debian project provides official cloud disk images with
-  cloud-init pre-installed:
+  In addition to the image itself you will need a set of scripts and config
+  files to set up the GitHub action runner software on the machine.
+  See [`contrib/seeds/debian`](contrib/seeds/debian) for a Debian example config.
 
-  https://cloud.debian.org/images/cloud/
+  A correctly set up Forrest environment directory will look something like this:
+
+  ```bash
+  $ tree env
+  env
+  └── seeds
+      └── debian-12
+          ├── cloud-init
+          │   ├── meta-data
+          │   └── user-data
+          ├── job-config
+          │   └── job.sh
+          └── debian-12-genericcloud-amd64.raw
+  ```
+
 
 - A `config.yaml` file
 
@@ -80,12 +95,12 @@ The main ingredients to set up Forrest are:
 
   machine_templates:
     small: &machine-small
-      seed: debian-12-genericcloud-amd64.raw
+      seed: debian-12
       ram: 7500M
       cpus: 4
       disk: 16G
     large: &machine-large
-      seed: debian-12-genericcloud-amd64.raw
+      seed: debian-12
       ram: 30G
       cpus: 10
       disk: 64G
