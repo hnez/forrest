@@ -89,9 +89,9 @@ The main ingredients to set up Forrest are:
     base_dir: env
 
   github:
-    app_id: [APP_ID]
+    app_id: <APP_ID>
     jwt_key_file: key.pem
-    webhook_secret: [WEBHOOK_SECRET]
+    webhook_secret: <WEBHOOK_SECRET>
 
   machine_templates:
     small: &machine-small
@@ -108,7 +108,7 @@ The main ingredients to set up Forrest are:
   repositories:
     hnez:
       forrest:
-        persistence_token: [PERSISTENCE_TOKEN]
+        persistence_token: <PERSISTENCE_TOKEN>
         machines:
           check: *machine-small
           build: *machine-large
