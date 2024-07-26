@@ -15,9 +15,7 @@ use tokio::task;
 use super::Scheduler;
 use crate::config::MachineConfig;
 
-mod config_fs;
-
-use config_fs::ConfigFs;
+use super::config_fs::ConfigFs;
 
 const QEMU_ARGS: &[&[&str]] = &[
     &["-enable-kvm"],
