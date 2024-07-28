@@ -42,12 +42,14 @@ runcmd:
         cat > "${SERVICE_PATH}" << 'EOF'
     [Unit]
     Description=GitHub JIT Runner
-    After=network.target
+    After=network.target cloud-init.target
 
     [Service]
     ExecStartPre=+/usr/bin/mount -o rw,fmask=0022,dmask=0022,uid=runner,gid=runner --mkdir /dev/disk/by-label/JOBDATA /home/runner/config
     ExecStart=/home/runner/config/job.sh
     ExecStopPost=+/usr/bin/systemctl poweroff
+    StandardOutput=journal+console
+    StandardError=journal+console
     User=runner
     WorkingDirectory=/home/runner
     KillMode=process

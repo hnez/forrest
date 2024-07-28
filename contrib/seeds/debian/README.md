@@ -8,7 +8,7 @@ The correct images to use are the `*-genericcloud-amd64.raw` variants,
 e.g. `debian-12-genericcloud-amd64.raw`.
 
 ```bash
-curl --location --compressed -o debian-12-genericcloud-amd64.raw \
+$ curl --location --compressed -o debian-12-genericcloud-amd64.raw \
   https://cdimage.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.raw
 ```
 

@@ -19,7 +19,8 @@ const QEMU_ARGS: &[&[&str]] = &[
     &["-nic", "user,model=virtio-net-pci"],
     &["-object", "rng-random,filename=/dev/urandom,id=rng0"],
     &["-device", "virtio-rng-pci,rng=rng0,id=rng-device0"],
-    &["-device", "pci-serial-2x,chardev1=bootlog,chardev2=telnet"],
+    &["-device", "isa-serial,chardev=bootlog"],
+    &["-device", "isa-serial,chardev=telnet"],
     &["-chardev", "file,id=bootlog,path=log.txt"],
     &[
         "-chardev",
