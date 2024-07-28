@@ -1,5 +1,4 @@
 mod config;
-//mod execute;
 //mod ingres;
 mod auth;
 mod jobs;
@@ -29,15 +28,15 @@ async fn main() -> anyhow::Result<()> {
     // missed webhooks.
     //let poller = ingres::poll::Poller::new(config.clone(), auth.clone(), scheduler.clone());
 
+    let machine_manager = machines::Manager::new(config.clone(), auth.clone());
+    let job_manager = jobs::Manager::new(machine_manager.clone());
+
     // Notify systemd that we are ready to handle requests
     if let Err(e) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]) {
         log::info!("Failed to notify systemd about service startup: {e}");
     }
 
     log::info!("Startup complete. Handling requests");
-
-    let machine_manager = machines::Manager::new(config.clone(), auth.clone());
-    let job_manager = jobs::Manager::new(machine_manager.clone());
 
     let triplet = machines::Triplet::new("hnez", "forrest", "build");
     let job_id = octocrab::models::JobId(0);
