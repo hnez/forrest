@@ -89,10 +89,8 @@ pub(super) async fn run(
         }
 
         path.ok_or_else(|| {
-            let message = format!(
-                "No *.img or *.raw disk image found in seed directory {}",
-                seed_dir_path.to_string_lossy()
-            );
+            let sdp = seed_dir_path.display();
+            let message = format!("No *.img or *.raw disk image found in seed directory {sdp}",);
 
             std::io::Error::new(ErrorKind::NotFound, message)
         })?
@@ -231,10 +229,10 @@ pub(super) async fn run(
     };
 
     if persist {
-        let dip_str = disk_path.to_string_lossy();
-        let mip_str = machine_image_path.to_string_lossy();
+        let dip = disk_path.display();
+        let mip = machine_image_path.display();
 
-        info!("Persisting disk file {dip_str} as {mip_str}");
+        info!("Persisting disk file {dip} as {mip}");
 
         let machine_image_dir = machine_image_path.parent().unwrap();
         std::fs::create_dir_all(machine_image_dir)?;

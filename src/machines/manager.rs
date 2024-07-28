@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 
 use super::machine::Machine;
 use super::triplet::Triplet;
@@ -78,6 +78,12 @@ impl Manager {
             } else {
                 demand.insert(triplet.clone(), 1);
             }
+        }
+
+        debug!("Updating the machine demand with:");
+
+        for (triplet, count) in demand.iter() {
+            debug!("  - {triplet}: {count}");
         }
 
         let mut machines = self.machines.lock().unwrap();
@@ -159,6 +165,7 @@ impl Manager {
             let ram_required = machine.ram_required();
 
             if ram_required > ram_available {
+                debug!("Postpone starting {machine} due to insufficient RAM {ram_available} vs. {ram_required}");
                 continue;
             }
 
@@ -296,17 +303,15 @@ impl Manager {
                 // image again and hopefully succeed.
                 let res = std::fs::rename(&machine_image_path, &broken_image_path);
 
-                let mip_str = machine_image_path.to_string_lossy();
-                let bip_str = broken_image_path.to_string_lossy();
+                let mip = machine_image_path.display();
+                let bip = broken_image_path.display();
 
                 match res {
-                    Ok(()) => info!("Retained broken machine image as {bip_str}"),
+                    Ok(()) => info!("Retained broken machine image as {bip}"),
                     Err(e) if e.kind() == ErrorKind::NotFound => {
-                        info!(
-                            "Machine image {mip_str} not found. Machine likely started from seed."
-                        )
+                        info!("Machine image {mip} not found. Machine likely started from seed.")
                     }
-                    Err(e) => error!("Failed to remove broken disk image {bip_str}: {e}"),
+                    Err(e) => error!("Failed to remove broken disk image {bip}: {e}"),
                 }
             }
         }

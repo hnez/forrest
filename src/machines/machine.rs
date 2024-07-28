@@ -13,7 +13,7 @@ use super::qemu;
 use super::triplet::Triplet;
 use crate::config::MachineConfig;
 
-#[derive(Clone, Copy)]
+#[derive(PartialEq, Clone, Copy)]
 pub(super) enum Status {
     Requested,
     Registering,
@@ -21,6 +21,16 @@ pub(super) enum Status {
     Waiting,
     Running,
     Stopping,
+}
+
+pub(super) struct Machine {
+    triplet: Triplet,
+    machine_config: MachineConfig,
+    status: Status,
+    runner_name: String,
+    abort: Option<AbortHandle>,
+    runner_id: Option<RunnerId>,
+    started: Option<Instant>,
 }
 
 impl Status {
@@ -45,14 +55,19 @@ impl Status {
     }
 }
 
-pub(super) struct Machine {
-    triplet: Triplet,
-    machine_config: MachineConfig,
-    status: Status,
-    runner_name: String,
-    abort: Option<AbortHandle>,
-    runner_id: Option<RunnerId>,
-    started: Option<Instant>,
+impl std::fmt::Display for Status {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let name = match self {
+            Self::Requested => "requested",
+            Self::Registering => "registering",
+            Self::Starting => "starting",
+            Self::Waiting => "waiting",
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+        };
+
+        write!(f, "{name}")
+    }
 }
 
 impl Machine {
@@ -161,7 +176,7 @@ impl Machine {
         let disk_path = self
             .triplet
             .disk_image_path(&manager.config().host.base_dir, &self.runner_name);
-        let dps = disk_path.to_string_lossy();
+        let dps = disk_path.display();
 
         match std::fs::remove_file(&disk_path) {
             Ok(()) => debug!("Removed disk file {dps}"),
@@ -225,7 +240,7 @@ impl Machine {
     }
 
     pub(super) fn status_feedback(&mut self, online: Option<bool>, busy: bool) {
-        self.status = match (&self.status, online, busy) {
+        let new = match (&self.status, online, busy) {
             // Stay in the current state
             (Status::Requested, _, _) => Status::Requested,
             (Status::Registering, _, _) => Status::Registering,
@@ -250,5 +265,19 @@ impl Machine {
                 Status::Stopping
             }
         };
+
+        if self.status != new {
+            info!(
+                "Machine {self} transitioned from state {} to {new}",
+                self.status
+            );
+            self.status = new;
+        }
+    }
+}
+
+impl std::fmt::Display for Machine {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{} {}", self.triplet, self.runner_name)
     }
 }

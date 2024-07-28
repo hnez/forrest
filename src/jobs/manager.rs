@@ -34,6 +34,10 @@ impl Manager {
         }
     }
 
+    /// Get GitHub workflow run ids for which we are interested in updates.
+    ///
+    /// This more or less means all runs with jobs that are not known to
+    /// have not completed or failed yet.
     pub fn runs_of_interest(&self) -> HashMap<OwnerAndRepo, HashSet<RunId>> {
         let mut res: HashMap<OwnerAndRepo, HashSet<RunId>> = HashMap::new();
 

@@ -48,10 +48,9 @@ impl ConfigFs {
             let path = entry.path();
 
             if !entry.metadata()?.is_file() {
-                warn!(
-                    "Ignoring non-file entry '{}' during assembly of config fs",
-                    path.to_string_lossy()
-                );
+                let p = path.display();
+
+                warn!("Ignoring non-file entry '{p}' during assembly of config fs",);
                 continue;
             }
 
