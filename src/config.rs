@@ -1,5 +1,5 @@
 use std::fs::File;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{collections::HashMap, time::Duration};
 
@@ -68,7 +68,7 @@ where
 #[derive(Debug, Deserialize)]
 pub struct HostConfig {
     pub ram: SizeInBytes,
-    pub base_dir: String,
+    pub base_dir: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]

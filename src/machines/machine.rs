@@ -1,6 +1,9 @@
-use std::time::{Duration, Instant};
+use std::{
+    io::ErrorKind,
+    time::{Duration, Instant},
+};
 
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use octocrab::models::RunnerId;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use tokio::task::AbortHandle;
@@ -99,6 +102,8 @@ impl Machine {
         let machine_config = self.machine_config.clone();
         let runner_name = self.runner_name.clone();
 
+        let disk_path = triplet.disk_image_path(&manager.config().host.base_dir, &runner_name);
+
         let task = tokio::spawn(async move {
             let installation_octocrab = manager.auth().user(&triplet.owner).unwrap();
 
@@ -128,6 +133,16 @@ impl Machine {
                 &machine_config,
                 &jit_config,
             );
+
+            let dps = disk_path.to_string_lossy();
+
+            match std::fs::remove_file(&disk_path) {
+                Ok(()) => debug!("Removed disk file {dps}"),
+                Err(e) if e.kind() == ErrorKind::NotFound => {
+                    debug!("Disk file {dps} was already removed")
+                }
+                Err(e) => error!("Failed to remove disk image {dps}: {e}"),
+            }
 
             match process.await {
                 Ok(()) => info!("Machine {} {} has completed", triplet, runner_name),

@@ -34,6 +34,11 @@ impl Triplet {
             .join(runner_name)
     }
 
+    pub(super) fn disk_image_path(&self, base_dir_path: &Path, runner_name: &str) -> PathBuf {
+        self.run_dir_path(base_dir_path, runner_name)
+            .join("disk.img")
+    }
+
     pub(super) fn machine_image_path(&self, base_dir_path: &Path) -> PathBuf {
         base_dir_path
             .join("machines")

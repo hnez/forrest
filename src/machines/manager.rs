@@ -69,7 +69,7 @@ impl Manager {
             .is_some()
     }
 
-    pub fn update_demand(&self, requested: &[Triplet]) {
+    pub fn update_demand<'a>(&self, requested: impl Iterator<Item = &'a Triplet>) {
         let mut demand: HashMap<Triplet, u64> = HashMap::new();
 
         for triplet in requested {
@@ -124,10 +124,7 @@ impl Manager {
             let machine_config = match machine_config {
                 Some(mc) => mc,
                 None => {
-                    error!(
-                        "Got request for unkown machine triplet: {}/{}/{}",
-                        triplet.owner, triplet.repository, triplet.machine_name
-                    );
+                    error!("Got request for unkown machine triplet: {triplet}");
                     continue;
                 }
             };
@@ -174,7 +171,7 @@ impl Manager {
     async fn sweep(&self) {
         // Go through every user in our list ...
         for (owner, repos) in self.config.repositories.iter() {
-            let octocrab = match self.auth.user(&owner) {
+            let octocrab = match self.auth.user(owner) {
                 Some(oc) => oc,
                 None => {
                     info!("Could not authenticate as {owner} (yet). Skipping");
@@ -285,7 +282,7 @@ impl Manager {
             if starting && start_timeout_elapsed {
                 error!("Runner {runner_name} on {triplet} failed to come up in time");
 
-                let machine_image_path = triplet.machine_image_path(&base_dir_path);
+                let machine_image_path = triplet.machine_image_path(base_dir_path);
 
                 // Remove the machine from the list and kill it.
                 let machine = machines.swap_remove(index);

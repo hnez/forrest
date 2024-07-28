@@ -1,5 +1,5 @@
 use std::fs::{create_dir_all, File};
-use std::{io::ErrorKind, path::Path};
+use std::io::ErrorKind;
 
 use log::{error, info};
 use octocrab::models::actions::SelfHostedRunnerJitConfig;
@@ -51,10 +51,8 @@ pub(super) async fn run(
     machine_config: &MachineConfig,
     jit_config: &SelfHostedRunnerJitConfig,
 ) -> std::io::Result<()> {
-    let base_dir_path = Path::new(&config.host.base_dir);
-
     let run_dir_path = {
-        let path = triplet.run_dir_path(&base_dir_path, runner_name);
+        let path = triplet.run_dir_path(&config.host.base_dir, runner_name);
 
         create_dir_all(&path)?;
 
@@ -63,11 +61,15 @@ pub(super) async fn run(
 
     // The seed dir contains the initial disk image and the scripts to set
     // up the machine and job.
-    let seed_dir_path = base_dir_path.join("seeds").join(&machine_config.seed);
+    let seed_dir_path = config
+        .host
+        .base_dir
+        .join("seeds")
+        .join(&machine_config.seed);
 
     // Check if we already have a machine image for this machine or if
     // we need to start from a seed image.
-    let machine_image_path = triplet.machine_image_path(&base_dir_path);
+    let machine_image_path = triplet.machine_image_path(&config.host.base_dir);
 
     let seed_image_path = {
         // Search for a *.img or *.raw file in the seed directory.
@@ -115,7 +117,7 @@ pub(super) async fn run(
         }
     };
 
-    let disk_path = run_dir_path.join("disk.img");
+    let disk_path = triplet.disk_image_path(&config.host.base_dir, runner_name);
 
     // Create a copy on write copy of the disk image using reflink
     reflink(base_image, &disk_path)?;
@@ -186,7 +188,7 @@ pub(super) async fn run(
 
     if !status.success() {
         let code = status.code().map(|c| c.to_string());
-        let printable_code = code.as_ref().map(|c| c.as_str()).unwrap_or("<None>");
+        let printable_code = code.as_deref().unwrap_or("<None>");
 
         let msg = format!(
             "The qemu process for job {} {} exited with code: {}",
@@ -228,19 +230,15 @@ pub(super) async fn run(
         }
     };
 
-    let dip_str = disk_path.to_string_lossy();
-    let mip_str = machine_image_path.to_string_lossy();
-
     if persist {
+        let dip_str = disk_path.to_string_lossy();
+        let mip_str = machine_image_path.to_string_lossy();
+
         info!("Persisting disk file {dip_str} as {mip_str}");
 
         let machine_image_dir = machine_image_path.parent().unwrap();
         std::fs::create_dir_all(machine_image_dir)?;
         std::fs::rename(disk_path, machine_image_path)?;
-    } else {
-        info!("Removing disk file {dip_str}");
-
-        std::fs::remove_file(&disk_path)?;
     }
 
     Ok(())

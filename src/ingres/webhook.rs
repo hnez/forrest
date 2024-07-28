@@ -48,7 +48,7 @@ impl WebhookHandler {
         scheduler: Scheduler,
     ) -> std::io::Result<Self> {
         let listener = {
-            let path = Path::new(&config.host.base_dir).join("webhook.sock");
+            let path = config.host.base_dir.join("webhook.sock");
 
             let _ = std::fs::remove_file(&path);
 
