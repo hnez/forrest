@@ -1,12 +1,13 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use octocrab::models::workflows::Status;
-use octocrab::models::JobId;
+use octocrab::models::{JobId, RunId};
 use tokio::task::JoinHandle;
 
-use crate::machines::Manager as MachineManager;
 use crate::machines::Triplet;
+use crate::machines::{Manager as MachineManager, OwnerAndRepo};
 
 use super::job::Job;
 
@@ -33,10 +34,31 @@ impl Manager {
         }
     }
 
+    pub fn runs_of_interest(&self) -> HashMap<OwnerAndRepo, HashSet<RunId>> {
+        let mut res: HashMap<OwnerAndRepo, HashSet<RunId>> = HashMap::new();
+
+        for job in self.jobs.lock().unwrap().iter() {
+            if job.is_interesting() {
+                let oar = job.triplet().clone().into_owner_and_repo();
+                let run_id = job.run_id();
+
+                if let Some(run_ids) = res.get_mut(&oar) {
+                    run_ids.insert(run_id);
+                } else {
+                    let run_ids = HashSet::from_iter([run_id]);
+                    res.insert(oar, run_ids);
+                }
+            }
+        }
+
+        res
+    }
+
     pub fn status_feedback(
         &self,
         triplet: &Triplet,
         job_id: JobId,
+        run_id: RunId,
         status: Status,
         runner_name: Option<&str>,
     ) {
@@ -59,13 +81,13 @@ impl Manager {
 
         let index = jobs
             .iter()
-            .position(|job| job.triplet() == triplet && job.id() == job_id);
+            .position(|job| job.triplet() == triplet && job.job_id() == job_id);
 
         let has_changed = match (&status, index) {
             // Track the status of this job by either adding it to our index
             // or updating its state if we already know it.
             (Status::Pending | Status::Queued | Status::InProgress, None) => {
-                jobs.push(Job::new(triplet.clone(), job_id, status));
+                jobs.push(Job::new(triplet.clone(), job_id, run_id, status));
                 true
             }
             (Status::Pending | Status::Queued | Status::InProgress, Some(index)) => {

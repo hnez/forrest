@@ -117,9 +117,9 @@ impl Manager {
             let machine_config = self
                 .config
                 .repositories
-                .get(&triplet.owner)
-                .and_then(|repos| repos.get(&triplet.repository))
-                .and_then(|repo| repo.machines.get(&triplet.machine_name));
+                .get(triplet.owner())
+                .and_then(|repos| repos.get(triplet.repository()))
+                .and_then(|repo| repo.machines.get(triplet.machine_name()));
 
             let machine_config = match machine_config {
                 Some(mc) => mc,
@@ -182,11 +182,10 @@ impl Manager {
             // ... visit each of their repositories ...
             for repository in repos.keys() {
                 // ... and have a look at all of their registered runners ...
-                for page in 0u32.. {
+                for page in 1u32.. {
                     let runners_page = octocrab
                         .actions()
                         .list_repo_self_hosted_runners(owner.as_str(), repository.as_str())
-                        .per_page(100)
                         .page(page)
                         .send()
                         .await;
@@ -199,7 +198,10 @@ impl Manager {
                         }
                     };
 
-                    let total_count = runners_page.total_count.unwrap_or(0);
+                    if runners_page.items.is_empty() {
+                        // We have reached an empty page. Time to stop.
+                        break;
+                    }
 
                     // ... which are reported by the API in pages.
                     for runner in runners_page.items {
@@ -253,11 +255,6 @@ impl Manager {
                                 Err(err) => warn!("Failed to de-register orphaned runner {runner_name} from {owner}/{repository}: {err}"),
                             }
                         }
-                    }
-
-                    // Stop once we have seen all pages
-                    if total_count <= (page as u64) * 100 {
-                        break;
                     }
                 }
             }

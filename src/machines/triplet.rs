@@ -6,10 +6,47 @@ use octocrab::{
 };
 
 #[derive(PartialEq, Eq, Clone, Hash)]
+pub struct OwnerAndRepo {
+    owner: String,
+    repository: String,
+}
+
+#[derive(PartialEq, Eq, Clone, Hash)]
 pub struct Triplet {
-    pub(super) owner: String,
-    pub(super) repository: String,
-    pub(super) machine_name: String,
+    owner: String,
+    repository: String,
+    machine_name: String,
+}
+
+impl OwnerAndRepo {
+    pub fn new(owner: impl ToString, repository: impl ToString) -> Self {
+        Self {
+            owner: owner.to_string(),
+            repository: repository.to_string(),
+        }
+    }
+
+    pub fn into_triplet(self, machine_name: impl ToString) -> Triplet {
+        Triplet {
+            owner: self.owner,
+            repository: self.repository,
+            machine_name: machine_name.to_string(),
+        }
+    }
+
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    pub fn repository(&self) -> &str {
+        &self.repository
+    }
+}
+
+impl std::fmt::Display for OwnerAndRepo {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}/{}", self.owner, self.repository)
+    }
 }
 
 impl Triplet {
@@ -22,6 +59,25 @@ impl Triplet {
             owner: owner.to_string(),
             repository: repository.to_string(),
             machine_name: machine_name.to_string(),
+        }
+    }
+
+    pub fn owner(&self) -> &str {
+        &self.owner
+    }
+
+    pub fn repository(&self) -> &str {
+        &self.repository
+    }
+
+    pub fn machine_name(&self) -> &str {
+        &self.machine_name
+    }
+
+    pub fn into_owner_and_repo(self) -> OwnerAndRepo {
+        OwnerAndRepo {
+            owner: self.owner,
+            repository: self.repository,
         }
     }
 

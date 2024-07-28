@@ -63,7 +63,7 @@ impl Machine {
 
             let mut name = b"forrest-".to_vec();
 
-            name.extend(triplet.machine_name.as_bytes());
+            name.extend(triplet.machine_name().as_bytes());
             name.push(b'-');
             name.extend(thread_rng().sample_iter(&Alphanumeric).take(16));
 
@@ -105,7 +105,7 @@ impl Machine {
         let disk_path = triplet.disk_image_path(&manager.config().host.base_dir, &runner_name);
 
         let task = tokio::spawn(async move {
-            let installation_octocrab = manager.auth().user(&triplet.owner).unwrap();
+            let installation_octocrab = manager.auth().user(triplet.owner()).unwrap();
 
             let jit_config = triplet
                 .jit_config(&runner_name, &installation_octocrab)
@@ -176,12 +176,12 @@ impl Machine {
 
             let triplet = self.triplet;
             let runner_name = self.runner_name;
-            let octocrab = auth.user(&triplet.owner).unwrap();
+            let octocrab = auth.user(triplet.owner()).unwrap();
 
             tokio::spawn(async move {
                 let res = octocrab
                     .actions()
-                    .delete_repo_runner(&triplet.owner, &triplet.repository, runner_id)
+                    .delete_repo_runner(triplet.owner(), triplet.repository(), runner_id)
                     .await;
 
                 match res {

@@ -132,9 +132,9 @@ pub(super) async fn run(
     }
 
     let substitutions = &[
-        ("<REPO_OWNER>", triplet.owner.as_str()),
-        ("<REPO_NAME>", triplet.repository.as_str()),
-        ("<MACHINE_NAME>", triplet.machine_name.as_str()),
+        ("<REPO_OWNER>", triplet.owner()),
+        ("<REPO_NAME>", triplet.repository()),
+        ("<MACHINE_NAME>", triplet.machine_name()),
         ("JITCONFIG", jit_config.encoded_jit_config.as_str()),
     ];
 
@@ -213,8 +213,8 @@ pub(super) async fn run(
 
         let persistence_token = config
             .repositories
-            .get(&triplet.owner)
-            .and_then(|repos| repos.get(&triplet.repository))
+            .get(triplet.owner())
+            .and_then(|repos| repos.get(triplet.repository()))
             .map(|repo| repo.persistence_token.as_str())
             .unwrap_or("");
 

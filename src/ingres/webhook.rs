@@ -1,24 +1,24 @@
 use std::fs::Permissions;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use hmac::{Hmac, Mac};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use octocrab::models::webhook_events::EventInstallation;
 use octocrab::models::webhook_events::{WebhookEvent, WebhookEventPayload};
-use octocrab::models::JobId;
+use octocrab::models::workflows::Status;
+use octocrab::models::{JobId, RunId};
 use sha2::Sha256;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::ReadHalf;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::time::timeout;
 
+use crate::auth::Auth;
 use crate::config::ConfigFile;
-use crate::execute::Scheduler;
-
-use super::auth::Auth;
+use crate::jobs::Manager as JobManager;
+use crate::machines::Triplet;
 
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBHOOK_SIZE_LIMIT: u64 = 4 * 1024 * 1024;
@@ -37,7 +37,7 @@ Content-Length: 0\r
 pub struct WebhookHandler {
     config: Arc<ConfigFile>,
     auth: Arc<Auth>,
-    scheduler: Scheduler,
+    job_manager: JobManager,
     listener: UnixListener,
 }
 
@@ -45,7 +45,7 @@ impl WebhookHandler {
     pub fn new(
         config: Arc<ConfigFile>,
         auth: Arc<Auth>,
-        scheduler: Scheduler,
+        job_manager: JobManager,
     ) -> std::io::Result<Self> {
         let listener = {
             let path = config.host.base_dir.join("webhook.sock");
@@ -62,7 +62,7 @@ impl WebhookHandler {
         Ok(Self {
             config,
             auth,
-            scheduler,
+            job_manager,
             listener,
         })
     }
@@ -72,7 +72,7 @@ impl WebhookHandler {
             let (sock, _) = self.listener.accept().await?;
             let config = self.config.clone();
             let auth = self.auth.clone();
-            let scheduler = self.scheduler.clone();
+            let job_manager = self.job_manager.clone();
 
             tokio::task::spawn(async move {
                 let timeout_error = Err(std::io::Error::new(
@@ -82,7 +82,7 @@ impl WebhookHandler {
 
                 let res = timeout(
                     WEBHOOK_TIMEOUT,
-                    webook_handler(sock, &config, &auth, scheduler),
+                    webook_handler(sock, &config, &auth, job_manager),
                 )
                 .await
                 .or(timeout_error);
@@ -93,6 +93,32 @@ impl WebhookHandler {
             });
         }
     }
+}
+
+async fn webook_handler(
+    mut sock: UnixStream,
+    config: &ConfigFile,
+    auth: &Auth,
+    job_manager: JobManager,
+) -> std::io::Result<()> {
+    let (read, mut write) = sock.split();
+
+    let secret = config.github.webhook_secret.as_bytes();
+
+    let response = match read_req(secret, read).await {
+        Ok(res) => {
+            workflow_job_handler(res, config, auth, job_manager).await;
+
+            OK_RESPONSE
+        }
+        Err(e) => {
+            error!("Got malformed webhook request: {e}");
+
+            ERROR_RESPONSE
+        }
+    };
+
+    write.write_all(response).await
 }
 
 async fn read_req<'a>(secret: &[u8], read: ReadHalf<'a>) -> std::io::Result<WebhookEvent> {
@@ -184,6 +210,8 @@ async fn read_req<'a>(secret: &[u8], read: ReadHalf<'a>) -> std::io::Result<Webh
         content
     };
 
+    trace!("Dot webhook event of type {event_type}");
+
     WebhookEvent::try_from_header_and_body(&event_type, &content).map_err(|_| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -196,7 +224,7 @@ async fn workflow_job_handler(
     event: WebhookEvent,
     config: &ConfigFile,
     auth: &Auth,
-    scheduler: Scheduler,
+    job_manager: JobManager,
 ) {
     let job = match event.specific {
         WebhookEventPayload::WorkflowJob(job) => job,
@@ -205,12 +233,18 @@ async fn workflow_job_handler(
 
     let repository = match event.repository {
         Some(repo) => repo,
-        None => return,
+        None => {
+            error!("Got workflow_job webhook event without repository field");
+            return;
+        }
     };
 
     let owner = match repository.owner {
         Some(owner) => owner.login,
-        None => return,
+        None => {
+            error!("Got workflow_job webhook event without user in repository field");
+            return;
+        }
     };
 
     let repo_name = repository.name;
@@ -239,7 +273,18 @@ async fn workflow_job_handler(
 
     let job_id = match job.workflow_job.get("id").and_then(|id| id.as_u64()) {
         Some(ji) => JobId(ji),
-        None => return,
+        None => {
+            error!("Got workflow_job webhook event without id field");
+            return;
+        }
+    };
+
+    let run_id = match job.workflow_job.get("run_id").and_then(|id| id.as_u64()) {
+        Some(ri) => RunId(ri),
+        None => {
+            error!("Got workflow_job webhook event without run_id field");
+            return;
+        }
     };
 
     let status = job
@@ -247,9 +292,21 @@ async fn workflow_job_handler(
         .get("status")
         .and_then(|status| status.as_str());
 
-    if status != Some("queued") {
-        return;
-    }
+    let status = match status {
+        Some("pending") => Status::Pending,
+        Some("queued") => Status::Queued,
+        Some("in_progress") => Status::InProgress,
+        Some("completed") => Status::Completed,
+        Some("failed") => Status::Failed,
+        Some(other) => {
+            error!("Got webhook job event with unknown job status {other}");
+            return;
+        }
+        None => {
+            error!("Got webhook job event with no job status");
+            return;
+        }
+    };
 
     let labels = match job
         .workflow_job
@@ -257,7 +314,10 @@ async fn workflow_job_handler(
         .and_then(|labels| labels.as_array())
     {
         Some(lb) => lb,
-        None => return,
+        None => {
+            error!("Got workflow_job webhook event without labels field");
+            return;
+        }
     };
 
     if labels.len() != 3 {
@@ -278,47 +338,16 @@ async fn workflow_job_handler(
         None => return,
     };
 
-    let installation_octocrab = auth.installation(installation_id);
+    let runner_name = job
+        .workflow_job
+        .get("runner_name")
+        .and_then(|runner_name| runner_name.as_str());
 
-    let res = scheduler.push(
-        &owner,
-        &repo_name,
-        machine_name,
-        job_id,
-        &installation_octocrab,
-    );
+    // Associate the user with their installation id so we can make API
+    // requests on their behalf later.
+    auth.update_user(&owner, installation_id);
 
-    if res.is_err() {
-        error!("Failed to setup job with machine type {machine_name} for {owner}/{repo_name}");
-    } else {
-        info!("Scheduler job with machine type {machine_name} for {owner}/{repo_name}");
-    }
+    let triplet = Triplet::new(owner, repo_name, machine_name);
 
-    scheduler.reschedule();
-}
-
-async fn webook_handler(
-    mut sock: UnixStream,
-    config: &ConfigFile,
-    auth: &Auth,
-    scheduler: Scheduler,
-) -> std::io::Result<()> {
-    let (read, mut write) = sock.split();
-
-    let secret = config.github.webhook_secret.as_bytes();
-
-    let response = match read_req(secret, read).await {
-        Ok(res) => {
-            workflow_job_handler(res, config, auth, scheduler).await;
-
-            OK_RESPONSE
-        }
-        Err(e) => {
-            error!("Got malformed webhook request: {e}");
-
-            ERROR_RESPONSE
-        }
-    };
-
-    write.write_all(response).await
+    job_manager.status_feedback(&triplet, job_id, run_id, status, runner_name);
 }
