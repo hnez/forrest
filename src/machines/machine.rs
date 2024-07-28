@@ -8,11 +8,10 @@ use octocrab::models::RunnerId;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use tokio::task::AbortHandle;
 
+use super::manager::Manager;
 use super::qemu;
 use super::triplet::Triplet;
-use crate::{auth::Auth, config::MachineConfig};
-
-use super::manager::Manager;
+use crate::config::MachineConfig;
 
 #[derive(Clone, Copy)]
 pub(super) enum Status {
@@ -102,8 +101,6 @@ impl Machine {
         let machine_config = self.machine_config.clone();
         let runner_name = self.runner_name.clone();
 
-        let disk_path = triplet.disk_image_path(&manager.config().host.base_dir, &runner_name);
-
         let task = tokio::spawn(async move {
             let installation_octocrab = manager.auth().user(triplet.owner()).unwrap();
 
@@ -134,16 +131,6 @@ impl Machine {
                 &jit_config,
             );
 
-            let dps = disk_path.to_string_lossy();
-
-            match std::fs::remove_file(&disk_path) {
-                Ok(()) => debug!("Removed disk file {dps}"),
-                Err(e) if e.kind() == ErrorKind::NotFound => {
-                    debug!("Disk file {dps} was already removed")
-                }
-                Err(e) => error!("Failed to remove disk image {dps}: {e}"),
-            }
-
             match process.await {
                 Ok(()) => info!("Machine {} {} has completed", triplet, runner_name),
                 Err(err) => error!("Failed to run machine {triplet} {runner_name}: {err}"),
@@ -153,7 +140,7 @@ impl Machine {
             // on the machine (but do not abort this task, as it is about to
             // end anyways).
             if let Some(machine) = manager.remove_machine(&runner_name) {
-                machine.kill(false, manager.auth());
+                machine.kill(false, &manager);
             }
 
             // Maybe schedule new machines in the place we freed.
@@ -164,11 +151,24 @@ impl Machine {
         self.abort = Some(task.abort_handle());
     }
 
-    pub(super) fn kill(self, do_abort: bool, auth: &Auth) {
+    pub(super) fn kill(self, do_abort: bool, manager: &Manager) {
         if let Some(abort) = self.abort {
             if do_abort {
                 abort.abort()
             }
+        }
+
+        let disk_path = self
+            .triplet
+            .disk_image_path(&manager.config().host.base_dir, &self.runner_name);
+        let dps = disk_path.to_string_lossy();
+
+        match std::fs::remove_file(&disk_path) {
+            Ok(()) => debug!("Removed disk file {dps}"),
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                debug!("Disk file {dps} was already removed")
+            }
+            Err(e) => error!("Failed to remove disk image {dps}: {e}"),
         }
 
         if let Some(runner_id) = self.runner_id {
@@ -176,7 +176,7 @@ impl Machine {
 
             let triplet = self.triplet;
             let runner_name = self.runner_name;
-            let octocrab = auth.user(triplet.owner()).unwrap();
+            let octocrab = manager.auth().user(triplet.owner()).unwrap();
 
             tokio::spawn(async move {
                 let res = octocrab

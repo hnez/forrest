@@ -15,7 +15,16 @@ async fn main() -> anyhow::Result<()> {
     // Use a central registry of cached installation tokens for efficiency.
     let auth = auth::Auth::new(&config)?;
 
+    // The machine manager handles our virtual machines and their relation with GitHub.
+    // It makes sure we only spawn as many VMs as the host can fit,
+    // that all machines we spawn eventually register as runners on GitHub,
+    // stopping machines that are no longer required because
+    // persisting disk images, cleaning up stale runners etc. etc.
     let machine_manager = machines::Manager::new(config.clone(), auth.clone());
+
+    // The job manager keeps track of build jobs and their status and
+    // communicates the demand for machines with the machine manager.
+    // It gets its updates from from the webhook handler and poller below.
     let job_manager = jobs::Manager::new(machine_manager.clone());
 
     // The main method to learn about new jobs to run is via webhooks.

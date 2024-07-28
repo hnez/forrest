@@ -105,7 +105,7 @@ impl Manager {
                 Some(0) | None => {
                     let machine = machines.swap_remove(i);
 
-                    machine.kill(true, &self.auth);
+                    machine.kill(true, self);
                 }
                 Some(count) => *count -= 1,
             }
@@ -283,7 +283,7 @@ impl Manager {
 
                 // Remove the machine from the list and kill it.
                 let machine = machines.swap_remove(index);
-                machine.kill(true, self.auth());
+                machine.kill(true, self);
 
                 let broken_image_path = {
                     let mut filename = machine_image_path.file_name().unwrap().to_os_string();
