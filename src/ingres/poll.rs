@@ -69,7 +69,7 @@ impl Poller {
                     return Ok(());
                 }
 
-                let age = run.created_at - Utc::now();
+                let age = Utc::now() - run.created_at;
 
                 if age > MAX_NEW_RUN_AGE {
                     // Runs older than a few days are likely not relevant to us anymore.
@@ -164,7 +164,7 @@ impl Poller {
         }
     }
 
-    async fn poll_installations(&self) -> octocrab::Result<()> {
+    pub async fn poll_once(&self) -> octocrab::Result<()> {
         // These are runs for which we have jobs in "interesting" states,
         // like "pending", "queued" or "in_progress".
         let mut runs_of_interest = self.job_manager.runs_of_interest();
@@ -203,11 +203,11 @@ impl Poller {
         Ok(())
     }
 
-    pub async fn run(&self) -> std::io::Result<()> {
+    pub async fn poll(&self) -> std::io::Result<()> {
         loop {
             debug!("Poll for pending jobs");
 
-            if let Err(e) = self.poll_installations().await {
+            if let Err(e) = self.poll_once().await {
                 error!("Failed to poll for installations: {e}");
             }
 

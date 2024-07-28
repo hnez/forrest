@@ -133,7 +133,7 @@ pub(super) async fn run(
         ("<REPO_OWNER>", triplet.owner()),
         ("<REPO_NAME>", triplet.repository()),
         ("<MACHINE_NAME>", triplet.machine_name()),
-        ("JITCONFIG", jit_config.encoded_jit_config.as_str()),
+        ("<JITCONFIG>", jit_config.encoded_jit_config.as_str()),
     ];
 
     // We need to keep a reference to `_cloud_init` around even though

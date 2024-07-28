@@ -140,6 +140,8 @@ impl Manager {
             }
         }
 
+        // We must release the lock before calling reschedule
+        std::mem::drop(machines);
         self.reschedule();
     }
 
@@ -149,8 +151,11 @@ impl Manager {
         let mut ram_available = {
             let ram_total = self.config.host.ram.bytes();
             let ram_consumed = machines.iter().map(Machine::ram_consumed).sum();
+            let ram_available = ram_total.saturating_sub(ram_consumed);
 
-            ram_total.saturating_sub(ram_consumed)
+            debug!("Re-scheduling machines. {ram_available} of {ram_total} available");
+
+            ram_available
         };
 
         // We want to prioritize scheduling jobs requiring a lot of RAM,
@@ -169,9 +174,17 @@ impl Manager {
                 continue;
             }
 
+            info!("Spawn {machine}");
+
             machine.spawn(self.clone());
 
             ram_available -= ram_required;
+        }
+
+        debug!("Machines and their new state:");
+
+        for machine in machines.iter() {
+            debug!("  - {machine}: {}", machine.status());
         }
     }
 

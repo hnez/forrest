@@ -37,6 +37,10 @@ async fn main() -> anyhow::Result<()> {
     // missed webhooks.
     let poller = ingres::poll::Poller::new(config.clone(), auth.clone(), job_manager);
 
+    // Make sure we can reach GitHub and our authentication works before
+    // signaling readiness to systemd.
+    poller.poll_once().await?;
+
     // Notify systemd that we are ready to handle requests
     if let Err(e) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]) {
         log::info!("Failed to notify systemd about service startup: {e}");
@@ -47,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
         res = machine_manager.janitor() => res,
         res = webhook.run() => res,
-        res = poller.run() => res,
+        res = poller.poll() => res,
     }?;
 
     Ok(())
