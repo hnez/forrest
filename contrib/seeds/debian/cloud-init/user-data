@@ -6,6 +6,18 @@ users:
 
 runcmd:
   - |
+    # Disable the ssh service on the machine.
+    # This should work with both Debian an Arch Linux machines.
+
+    for service in sshd.service ssh.service
+    do
+      if [ -e "/usr/lib/systemd/system/${service}" ]
+      then
+          systemctl disable --now --no-block "${service}"
+      fi
+    done
+
+  - |
     set -e -u
 
     # Provide a root shell on the secondary serial device
@@ -42,9 +54,10 @@ runcmd:
         cat > "${SERVICE_PATH}" << 'EOF'
     [Unit]
     Description=GitHub JIT Runner
-    After=network.target cloud-init.target
+    After=network.target cloud-final.service
 
     [Service]
+    ExecStartPre=+/usr/bin/cloud-init status --wait
     ExecStartPre=+/usr/bin/mount -o rw,fmask=0022,dmask=0022,uid=runner,gid=runner --mkdir /dev/disk/by-label/JOBDATA /home/runner/config
     ExecStart=/home/runner/config/job.sh
     ExecStopPost=+/usr/bin/systemctl poweroff
@@ -57,7 +70,7 @@ runcmd:
     TimeoutStopSec=5min
 
     [Install]
-    WantedBy=multi-user.target
+    WantedBy=cloud-init.target
     EOF
 
         systemctl daemon-reload

@@ -95,24 +95,24 @@ The main ingredients to set up Forrest are:
     polling_interval: 15m
 
   machine_templates:
-    small: &machine-small
+    debian-small: &debian-small
       seed: debian-12
       ram: 7500M
       cpus: 4
       disk: 16G
-    large: &machine-large
-      seed: debian-12
-      ram: 30G
-      cpus: 10
-      disk: 64G
+    arch-small: &arch-small
+      seed: arch
+      ram: 7500G
+      cpus: 4
+      disk: 16G
 
   repositories:
     hnez:
       forrest:
         persistence_token: <PERSISTENCE_TOKEN>
         machines:
-          check: *machine-small
-          build: *machine-large
+          build-debain: *debian-small
+          build-arch: *arch-small
   ```
 
 With the setup done we can write our first GitHub workflow using Forrest:
@@ -123,16 +123,36 @@ name: demo
 on: [pull_request, push]
 
 jobs:
-  demo:
-    name: Demo Job
-    runs-on: [self-hosted, forrest, check]
+  demo-debian:
+    runs-on: [self-hosted, forrest, build-debian]
     steps:
       - name: Set up runner machine
         run: |
           sudo localectl set-locale en_US.UTF-8
+          export DEBIAN_FRONTEND=noninteractive
           sudo apt-get update
           sudo apt-get --assume-yes dist-upgrade
           sudo apt-get --assume-yes install git
+      - name: Check out the repository
+        uses: actions/checkout@v4
+      - name: Demo
+        run: echo "Hey there from a machine managed by Forrest!"
+      - name: Persist the disk image
+        env:
+          PERSISTENCE_TOKEN: ${{ secrets.PERSISTENCE_TOKEN }}
+        if: ${{ env.PERSISTENCE_TOKEN != ''  }}
+        run: |
+          sudo fstrim /
+          echo "$PERSISTENCE_TOKEN" > ~/config/persist
+
+  demo-arch:
+    runs-on: [self-hosted, forrest, build-arch]
+    steps:
+      - name: Set up runner machine
+        run: |
+          sudo localectl set-locale en_US.UTF-8
+          sudo pacman --noconfirm --noprogressbar -Syuu
+          sudo pacman --noconfirm --noprogressbar -S git
       - name: Check out the repository
         uses: actions/checkout@v4
       - name: Demo
