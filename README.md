@@ -130,9 +130,10 @@ jobs:
         run: |
           sudo localectl set-locale en_US.UTF-8
           export DEBIAN_FRONTEND=noninteractive
-          sudo apt-get update
-          sudo apt-get --assume-yes dist-upgrade
-          sudo apt-get --assume-yes install git
+          export DPKG_FORCE=confnew
+          sudo -E apt-get update
+          sudo -E apt-get --assume-yes dist-upgrade
+          sudo -E apt-get --assume-yes install git
       - name: Check out the repository
         uses: actions/checkout@v4
       - name: Demo
