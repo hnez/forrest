@@ -106,7 +106,25 @@ impl ConfigFile {
     pub fn read<P: AsRef<Path>>(path: P) -> Arc<Self> {
         let mut fd = File::open(path).unwrap();
 
-        let cfg = serde_yml::from_reader(&mut fd).unwrap();
+        let cfg = {
+            // First we read the config file as generic serde_yml Value.
+            let mut cfg: serde_yml::Value = serde_yml::from_reader(&mut fd).unwrap();
+
+            // Then we apply merges / overrides like these:
+            // 
+            // machine_templates:
+            //   small: &machine-small
+            //     ram: 8G
+            //     …
+            //   large: &machine-large
+            //     << : *machine-small
+            //     ram: 32G
+            //
+            cfg.apply_merge().unwrap();
+
+            // And then we convert to our config format.
+            serde_yml::from_value(cfg).unwrap()
+        };
 
         Arc::new(cfg)
     }
