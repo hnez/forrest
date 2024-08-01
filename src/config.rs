@@ -37,8 +37,12 @@ impl SizeInBytes {
         self.0
     }
 
+    pub fn kilobyes(self) -> u64 {
+        self.bytes() / 1024
+    }
+
     pub fn megabytes(&self) -> u64 {
-        self.0 / (1024 * 1024)
+        self.kilobyes() / 1024
     }
 }
 
@@ -65,6 +69,15 @@ where
     Ok(Duration::from_secs(value * multiplier))
 }
 
+#[allow(unused)]
+#[derive(Clone, Debug, Deserialize)]
+pub struct ExposedDirectory {
+    path: PathBuf,
+    tag: String,
+    #[serde(default)]
+    writable: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct HostConfig {
     pub ram: SizeInBytes,
@@ -81,16 +94,25 @@ pub struct GitHubConfig {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub enum SeedOrBaseMachine {
+    Seed(String),
+    Base(String),
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct MachineConfig {
-    pub seed: String,
+    #[serde(flatten)]
+    pub image: SeedOrBaseMachine,
     pub ram: SizeInBytes,
     pub cpus: u32,
     pub disk: SizeInBytes,
+    #[serde(default)]
+    pub exposed_directories: Vec<ExposedDirectory>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Repository {
-    pub persistence_token: String,
+    pub persistence_token: Option<String>,
     pub machines: HashMap<String, MachineConfig>,
 }
 

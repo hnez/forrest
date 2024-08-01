@@ -7,7 +7,7 @@ use reflink_copy::reflink;
 use tokio::process::Command;
 
 use super::{config_fs::ConfigFs, Triplet};
-use crate::config::{ConfigFile, MachineConfig};
+use crate::config::{ConfigFile, MachineConfig, SeedOrBaseMachine};
 
 const QEMU_ARGS: &[&[&str]] = &[
     &["-enable-kvm"],
@@ -60,13 +60,14 @@ pub(super) async fn run(
         path
     };
 
+    let seed = match &machine_config.image {
+        SeedOrBaseMachine::Seed(seed) => seed,
+        SeedOrBaseMachine::Base(_) => unimplemented!(),
+    };
+
     // The seed dir contains the initial disk image and the scripts to set
     // up the machine and job.
-    let seed_dir_path = config
-        .host
-        .base_dir
-        .join("seeds")
-        .join(&machine_config.seed);
+    let seed_dir_path = config.host.base_dir.join("seeds").join(seed);
 
     // Check if we already have a machine image for this machine or if
     // we need to start from a seed image.
@@ -214,7 +215,7 @@ pub(super) async fn run(
             .repositories
             .get(triplet.owner())
             .and_then(|repos| repos.get(triplet.repository()))
-            .map(|repo| repo.persistence_token.as_str())
+            .and_then(|repo| repo.persistence_token.as_deref())
             .unwrap_or("");
 
         if persistence_token.is_empty() {
