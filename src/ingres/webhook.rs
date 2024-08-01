@@ -7,8 +7,7 @@ use hmac::{Hmac, Mac};
 use log::{debug, error, info, trace, warn};
 use octocrab::models::webhook_events::EventInstallation;
 use octocrab::models::webhook_events::{WebhookEvent, WebhookEventPayload};
-use octocrab::models::workflows::Status;
-use octocrab::models::{JobId, RunId};
+use octocrab::models::workflows::Job;
 use sha2::Sha256;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::unix::ReadHalf;
@@ -210,7 +209,7 @@ async fn read_req<'a>(secret: &[u8], read: ReadHalf<'a>) -> std::io::Result<Webh
         content
     };
 
-    trace!("Dot webhook event of type {event_type}");
+    trace!("Got webhook event of type {event_type}");
 
     WebhookEvent::try_from_header_and_body(&event_type, &content).map_err(|_| {
         std::io::Error::new(
@@ -271,77 +270,28 @@ async fn workflow_job_handler(
         }
     };
 
-    let job_id = match job.workflow_job.get("id").and_then(|id| id.as_u64()) {
-        Some(ji) => JobId(ji),
-        None => {
-            error!("Got workflow_job webhook event without id field");
+    let workflow_job: Job = match serde_json::from_value(job.workflow_job) {
+        Ok(workflow_job) => workflow_job,
+        Err(err) => {
+            error!("Could not parse workflow job received from webhook: {err}");
             return;
         }
     };
 
-    let run_id = match job.workflow_job.get("run_id").and_then(|id| id.as_u64()) {
-        Some(ri) => RunId(ri),
-        None => {
-            error!("Got workflow_job webhook event without run_id field");
-            return;
-        }
-    };
-
-    let status = job
-        .workflow_job
-        .get("status")
-        .and_then(|status| status.as_str());
-
-    let status = match status {
-        Some("pending") => Status::Pending,
-        Some("queued") => Status::Queued,
-        Some("in_progress") => Status::InProgress,
-        Some("completed") => Status::Completed,
-        Some("failed") => Status::Failed,
-        Some(other) => {
-            error!("Got webhook job event with unknown job status {other}");
-            return;
-        }
-        None => {
-            error!("Got webhook job event with no job status");
-            return;
-        }
-    };
-
-    let labels = match job
-        .workflow_job
-        .get("labels")
-        .and_then(|labels| labels.as_array())
-    {
-        Some(lb) => lb,
-        None => {
-            error!("Got workflow_job webhook event without labels field");
-            return;
-        }
-    };
-
-    if labels.len() != 3 {
+    if workflow_job.labels.len() != 3 {
         debug!(
             "Ignoring job with {} != 3 labels on {owner}/{repo_name}",
-            labels.len()
+            workflow_job.labels.len()
         );
         return;
     }
 
-    if labels[0].as_str() != Some("self-hosted") || labels[1].as_str() != Some("forrest") {
+    if workflow_job.labels[0] != "self-hosted" || workflow_job.labels[1] != "forrest" {
         debug!("Ignoring job that does not have 'self-hosted' and 'forrest' as first labels on {owner}/{repo_name}");
         return;
     }
 
-    let machine_name = match labels[2].as_str() {
-        Some(mn) => mn,
-        None => return,
-    };
-
-    let runner_name = job
-        .workflow_job
-        .get("runner_name")
-        .and_then(|runner_name| runner_name.as_str());
+    let machine_name = &workflow_job.labels[2];
 
     // Associate the user with their installation id so we can make API
     // requests on their behalf later.
@@ -349,5 +299,11 @@ async fn workflow_job_handler(
 
     let triplet = Triplet::new(owner, repo_name, machine_name);
 
-    job_manager.status_feedback(&triplet, job_id, run_id, status, runner_name);
+    job_manager.status_feedback(
+        &triplet,
+        workflow_job.id,
+        workflow_job.run_id,
+        workflow_job.status,
+        workflow_job.runner_name.as_deref(),
+    );
 }

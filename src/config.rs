@@ -111,7 +111,7 @@ impl ConfigFile {
             let mut cfg: serde_yml::Value = serde_yml::from_reader(&mut fd).unwrap();
 
             // Then we apply merges / overrides like these:
-            // 
+            //
             // machine_templates:
             //   small: &machine-small
             //     ram: 8G
