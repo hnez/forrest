@@ -74,10 +74,10 @@ where
 #[allow(unused)]
 #[derive(Clone, Debug, Deserialize)]
 pub struct ExposedDirectory {
-    path: PathBuf,
-    tag: String,
+    pub path: PathBuf,
+    pub tag: String,
     #[serde(default)]
-    writable: bool,
+    pub writable: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,7 +109,7 @@ pub struct MachineConfig {
     pub cpus: u32,
     pub disk: SizeInBytes,
     #[serde(default)]
-    pub exposed_directories: Vec<ExposedDirectory>,
+    pub shared_directories: Vec<ExposedDirectory>,
 }
 
 #[derive(Debug, Deserialize)]

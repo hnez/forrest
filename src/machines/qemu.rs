@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::ffi::OsString;
+use std::fmt::Write;
 use std::fs::{create_dir_all, File};
 use std::io::ErrorKind;
 
@@ -206,6 +208,25 @@ pub(super) async fn run(
         )?
     };
 
+    let virtfs_args = machine_config.shared_directories.iter().flat_map(|dir| {
+        let mut arg = OsString::new();
+
+        write!(
+            &mut arg,
+            "local,security_model=none,mount_tag={},path=",
+            dir.tag
+        )
+        .unwrap();
+
+        arg.push(dir.path.as_os_str());
+
+        if !dir.writable {
+            write!(&mut arg, ",readonly").unwrap();
+        }
+
+        ["-virtfs".into(), arg].into_iter()
+    });
+
     let mut qemu = {
         let ram = machine_config.ram.megabytes().to_string();
         let smp = machine_config.cpus.to_string();
@@ -218,7 +239,8 @@ pub(super) async fn run(
             .arg(&ram)
             .arg("-smp")
             .arg(&smp)
-            .args(QEMU_ARGS.iter().flat_map(|arg_list| *arg_list));
+            .args(QEMU_ARGS.iter().flat_map(|arg_list| *arg_list))
+            .args(virtfs_args);
 
         qemu
     };
