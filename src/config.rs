@@ -148,7 +148,7 @@ impl ConfigFile {
             if let Some(cfg_mapping) = cfg.as_mapping_mut() {
                 // Remove all top level fields from the config who's name ends
                 // in `_templates`.
-                // This allows using keys like `machine-templates` which do not
+                // This allows using keys like `machine_templates` which do not
                 // adhere to the syntax.
 
                 cfg_mapping.retain(|k, _| {
