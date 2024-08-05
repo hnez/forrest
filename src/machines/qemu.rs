@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{create_dir_all, File};
 use std::io::ErrorKind;
 
@@ -60,50 +61,88 @@ pub(super) async fn run(
         path
     };
 
-    let seed = match &machine_config.image {
-        SeedOrBaseMachine::Seed(seed) => seed,
-        SeedOrBaseMachine::Base(_) => unimplemented!(),
-    };
+    let (seed_dir, base_image) = match &machine_config.image {
+        SeedOrBaseMachine::Seed(seed) => {
+            // The seed dir contains the initial disk image and the scripts to set
+            // up the machine and job.
+            let seed_dir = config.host.base_dir.join("seeds").join(seed);
 
-    // The seed dir contains the initial disk image and the scripts to set
-    // up the machine and job.
-    let seed_dir_path = config.host.base_dir.join("seeds").join(seed);
+            let seed_image = {
+                // Search for a *.img or *.raw file in the seed directory.
+
+                let mut path = None;
+
+                for entry in std::fs::read_dir(&seed_dir)? {
+                    let entry = entry?;
+                    let meta = entry.metadata()?;
+                    let name = entry.file_name();
+                    let name_bytes = name.as_encoded_bytes();
+
+                    if meta.is_file()
+                        && (name_bytes.ends_with(b".img") || name_bytes.ends_with(b".raw"))
+                    {
+                        path = Some(entry.path());
+                        break;
+                    }
+                }
+
+                path.ok_or_else(|| {
+                    let sdp = seed_dir.display();
+                    let message =
+                        format!("No *.img or *.raw disk image found in seed directory {sdp}",);
+
+                    std::io::Error::new(ErrorKind::NotFound, message)
+                })?
+            };
+
+            (seed_dir, seed_image)
+        }
+        SeedOrBaseMachine::Base(base_triplet) => {
+            let base_machine_image = triplet.machine_image_path(&config.host.base_dir);
+
+            let mut visited = HashSet::new();
+
+            let mut base_triplet = base_triplet.clone();
+
+            loop {
+                let base_machine = config.repositories.get(base_triplet.owner())
+                    .and_then(|repos| repos.get(base_triplet.repository()))
+                    .and_then(|repo| repo.machines.get(base_triplet.machine_name()))
+                    .ok_or_else(|| {
+                        let msg = format!("Could not find base machine {base_triplet} required to run machine {triplet}");
+                        std::io::Error::other(msg)
+                    })?;
+
+                match &base_machine.image {
+                    SeedOrBaseMachine::Seed(seed) => {
+                        let seed_dir = config.host.base_dir.join("seeds").join(seed);
+
+                        break (seed_dir, base_machine_image);
+                    }
+                    SeedOrBaseMachine::Base(base_base_triplet) => {
+                        if visited.insert(base_base_triplet.clone()) {
+                            let msg = format!(
+                                "Encountered loop while resolving base image for {triplet}"
+                            );
+                            return Err(std::io::Error::other(msg));
+                        }
+
+                        base_triplet = base_base_triplet.clone();
+                    }
+                }
+            }
+        }
+    };
 
     // Check if we already have a machine image for this machine or if
     // we need to start from a seed image.
-    let machine_image_path = triplet.machine_image_path(&config.host.base_dir);
+    let machine_image = triplet.machine_image_path(&config.host.base_dir);
 
-    let seed_image_path = {
-        // Search for a *.img or *.raw file in the seed directory.
-
-        let mut path = None;
-
-        for entry in std::fs::read_dir(&seed_dir_path)? {
-            let entry = entry?;
-            let meta = entry.metadata()?;
-            let name = entry.file_name();
-            let name_bytes = name.as_encoded_bytes();
-
-            if meta.is_file() && (name_bytes.ends_with(b".img") || name_bytes.ends_with(b".raw")) {
-                path = Some(entry.path());
-                break;
-            }
-        }
-
-        path.ok_or_else(|| {
-            let sdp = seed_dir_path.display();
-            let message = format!("No *.img or *.raw disk image found in seed directory {sdp}",);
-
-            std::io::Error::new(ErrorKind::NotFound, message)
-        })?
-    };
-
-    let base_image = {
+    let image = {
         let machine_image_exists_and_is_newer = {
-            let seed_image_modification = seed_image_path.metadata()?.modified()?;
-            let machine_image_modification = machine_image_path
-                .metadata()
-                .and_then(|meta| meta.modified());
+            let seed_image_modification = base_image.metadata()?.modified()?;
+            let machine_image_modification =
+                machine_image.metadata().and_then(|meta| meta.modified());
 
             machine_image_modification
                 .map(|mim| mim > seed_image_modification)
@@ -111,16 +150,16 @@ pub(super) async fn run(
         };
 
         if machine_image_exists_and_is_newer {
-            &machine_image_path
+            &machine_image
         } else {
-            &seed_image_path
+            &base_image
         }
     };
 
     let disk_path = triplet.disk_image_path(&config.host.base_dir, runner_name);
 
     // Create a copy on write copy of the disk image using reflink
-    reflink(base_image, &disk_path)?;
+    reflink(image, &disk_path)?;
 
     // Grow the disk image if required
     let target_disk_size = machine_config.disk.bytes();
@@ -143,7 +182,7 @@ pub(super) async fn run(
     // it is dropped.
     let _cloud_init = {
         let cloud_init_path = run_dir_path.join("cloud-init.img");
-        let cloud_init_template_path = seed_dir_path.join("cloud-init");
+        let cloud_init_template_path = seed_dir.join("cloud-init");
 
         ConfigFs::new(
             cloud_init_path,
@@ -156,7 +195,7 @@ pub(super) async fn run(
 
     let job_config = {
         let job_config_path = run_dir_path.join("job-config.img");
-        let job_config_template_path = seed_dir_path.join("job-config");
+        let job_config_template_path = seed_dir.join("job-config");
 
         ConfigFs::new(
             job_config_path,
@@ -232,13 +271,13 @@ pub(super) async fn run(
 
     if persist {
         let dip = disk_path.display();
-        let mip = machine_image_path.display();
+        let mip = machine_image.display();
 
         info!("Persisting disk file {dip} as {mip}");
 
-        let machine_image_dir = machine_image_path.parent().unwrap();
+        let machine_image_dir = machine_image.parent().unwrap();
         std::fs::create_dir_all(machine_image_dir)?;
-        std::fs::rename(disk_path, machine_image_path)?;
+        std::fs::rename(disk_path, machine_image)?;
     }
 
     Ok(())

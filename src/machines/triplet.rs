@@ -4,6 +4,7 @@ use octocrab::{
     models::{actions::SelfHostedRunnerJitConfig, RunnerGroupId},
     Octocrab,
 };
+use serde::de::{Deserialize, Deserializer, Error};
 
 #[derive(PartialEq, Eq, Clone, Hash)]
 pub struct OwnerAndRepo {
@@ -137,5 +138,32 @@ impl std::fmt::Display for Triplet {
             "{}/{}/{}",
             self.owner, self.repository, self.machine_name
         )
+    }
+}
+
+impl std::fmt::Debug for Triplet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self, f)
+    }
+}
+
+impl<'de> Deserialize<'de> for Triplet {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let triplet_str: String = Deserialize::deserialize(deserializer)?;
+
+        let parts: Vec<&str> = triplet_str.split('/').collect();
+        let parts_len = parts.len();
+
+        if parts_len != 3 {
+            return Err(D::Error::invalid_length(
+                parts_len,
+                &"Expected string of format <user>/<repo>/<machine type>",
+            ));
+        }
+
+        Ok(Self::new(parts[0], parts[1], parts[2]))
     }
 }

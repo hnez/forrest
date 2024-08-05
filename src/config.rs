@@ -5,6 +5,8 @@ use std::{collections::HashMap, time::Duration};
 
 use serde::{Deserialize, Deserializer};
 
+use crate::machines::Triplet;
+
 #[derive(Clone, Copy, Debug)]
 pub struct SizeInBytes(u64);
 
@@ -96,7 +98,7 @@ pub struct GitHubConfig {
 #[derive(Clone, Debug, Deserialize)]
 pub enum SeedOrBaseMachine {
     Seed(String),
-    Base(String),
+    Base(Triplet),
 }
 
 #[derive(Clone, Debug, Deserialize)]
