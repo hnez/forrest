@@ -95,24 +95,27 @@ The main ingredients to set up Forrest are:
     polling_interval: 15m
 
   machine_templates:
-    debian-small: &debian-small
-      seed: debian-12
+    small: &machine-small
       ram: 7500M
-      cpus: 4
-      disk: 16G
-    arch-small: &arch-small
-      seed: arch
-      ram: 7500G
       cpus: 4
       disk: 16G
 
   repositories:
     hnez:
-      forrest:
+      forrest-images:
         persistence_token: <PERSISTENCE_TOKEN>
         machines:
-          build-debain: *debian-small
-          build-arch: *arch-small
+          debian-base:
+            << : *machine-small
+            seed: debian-12
+          debian-yocto:
+            << : *machine-small
+            base: hnez/forrest-images/debian-base
+      forrest:
+        machines:
+          build-on-debian:
+            << : *machine-small
+            base: hnez/forrest-images/debian-base
   ```
 
 With the setup done we can write our first GitHub workflow using Forrest:

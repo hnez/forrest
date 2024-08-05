@@ -120,7 +120,6 @@ pub struct Repository {
 pub struct ConfigFile {
     pub host: HostConfig,
     pub github: GitHubConfig,
-    pub machine_templates: HashMap<String, MachineConfig>,
     pub repositories: HashMap<String, HashMap<String, Repository>>,
 }
 
@@ -143,6 +142,19 @@ impl ConfigFile {
             //     ram: 32G
             //
             cfg.apply_merge().unwrap();
+
+            if let Some(cfg_mapping) = cfg.as_mapping_mut() {
+                // Remove all top level fields from the config who's name ends
+                // in `_templates`.
+                // This allows using keys like `machine-templates` which do not
+                // adhere to the syntax.
+
+                cfg_mapping.retain(|k, _| {
+                    k.as_str()
+                        .map(|k| !k.ends_with("_templates"))
+                        .unwrap_or(true)
+                });
+            }
 
             // And then we convert to our config format.
             serde_yml::from_value(cfg).unwrap()
