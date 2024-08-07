@@ -10,7 +10,7 @@ use reflink_copy::reflink;
 use tokio::process::Command;
 
 use super::{config_fs::ConfigFs, Triplet};
-use crate::config::{ConfigFile, MachineConfig, SeedOrBaseMachine};
+use crate::config::{ConfigFile, MachineConfig};
 
 const QEMU_ARGS: &[&[&str]] = &[
     &["-enable-kvm"],
@@ -63,8 +63,46 @@ pub(super) async fn run(
         path
     };
 
-    let (seed_dir, base_image) = match &machine_config.image {
-        SeedOrBaseMachine::Seed { seed } => {
+    let (seed_dir, base_image) = match (&machine_config.seed, &machine_config.base) {
+        (_, Some(base_triplet)) => {
+            let base_machine_image = base_triplet.machine_image_path(&config.host.base_dir);
+
+            let mut visited = HashSet::new();
+
+            let mut base_triplet = base_triplet.clone();
+
+            loop {
+                let base_machine = config.repositories.get(base_triplet.owner())
+                    .and_then(|repos| repos.get(base_triplet.repository()))
+                    .and_then(|repo| repo.machines.get(base_triplet.machine_name()))
+                    .ok_or_else(|| {
+                        let msg = format!("Could not find base machine {base_triplet} required to run machine {triplet}");
+                        std::io::Error::other(msg)
+                    })?;
+
+                match (&base_machine.seed, &base_machine.base) {
+                    (_, Some(next_base_triplet)) => {
+                        if !visited.insert(next_base_triplet.clone()) {
+                            let msg = format!(
+                                "Encountered loop while resolving base image for {triplet}"
+                            );
+                            return Err(std::io::Error::other(msg));
+                        }
+
+                        base_triplet = next_base_triplet.clone();
+                    }
+                    (Some(seed), None) => {
+                        let seed_dir = config.host.base_dir.join("seeds").join(seed);
+
+                        break (seed_dir, base_machine_image);
+                    }
+                    (None, None) => {
+                        panic!("Encountered machine without seed image or base machine")
+                    }
+                }
+            }
+        }
+        (Some(seed), None) => {
             // The seed dir contains the initial disk image and the scripts to set
             // up the machine and job.
             let seed_dir = config.host.base_dir.join("seeds").join(seed);
@@ -99,43 +137,7 @@ pub(super) async fn run(
 
             (seed_dir, seed_image)
         }
-        SeedOrBaseMachine::Base { base: base_triplet } => {
-            let base_machine_image = base_triplet.machine_image_path(&config.host.base_dir);
-
-            let mut visited = HashSet::new();
-
-            let mut base_triplet = base_triplet.clone();
-
-            loop {
-                let base_machine = config.repositories.get(base_triplet.owner())
-                    .and_then(|repos| repos.get(base_triplet.repository()))
-                    .and_then(|repo| repo.machines.get(base_triplet.machine_name()))
-                    .ok_or_else(|| {
-                        let msg = format!("Could not find base machine {base_triplet} required to run machine {triplet}");
-                        std::io::Error::other(msg)
-                    })?;
-
-                match &base_machine.image {
-                    SeedOrBaseMachine::Seed { seed } => {
-                        let seed_dir = config.host.base_dir.join("seeds").join(seed);
-
-                        break (seed_dir, base_machine_image);
-                    }
-                    SeedOrBaseMachine::Base {
-                        base: next_base_triplet,
-                    } => {
-                        if !visited.insert(next_base_triplet.clone()) {
-                            let msg = format!(
-                                "Encountered loop while resolving base image for {triplet}"
-                            );
-                            return Err(std::io::Error::other(msg));
-                        }
-
-                        base_triplet = next_base_triplet.clone();
-                    }
-                }
-            }
-        }
+        (None, None) => panic!("Encountered machine without seed image or base machine"),
     };
 
     // Check if we already have a machine image for this machine or if

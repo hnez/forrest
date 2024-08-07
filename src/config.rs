@@ -71,8 +71,8 @@ where
     Ok(Duration::from_secs(value * multiplier))
 }
 
-#[allow(unused)]
 #[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExposedDirectory {
     pub path: PathBuf,
     pub tag: String,
@@ -81,12 +81,14 @@ pub struct ExposedDirectory {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HostConfig {
     pub ram: SizeInBytes,
     pub base_dir: PathBuf,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GitHubConfig {
     pub app_id: u64,
     pub jwt_key_file: String,
@@ -96,16 +98,10 @@ pub struct GitHubConfig {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(untagged)]
-pub enum SeedOrBaseMachine {
-    Seed { seed: String },
-    Base { base: Triplet },
-}
-
-#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MachineConfig {
-    #[serde(flatten)]
-    pub image: SeedOrBaseMachine,
+    pub seed: Option<String>,
+    pub base: Option<Triplet>,
     pub ram: SizeInBytes,
     pub cpus: u32,
     pub disk: SizeInBytes,
@@ -114,12 +110,14 @@ pub struct MachineConfig {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Repository {
     pub persistence_token: Option<String>,
     pub machines: HashMap<String, MachineConfig>,
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ConfigFile {
     pub host: HostConfig,
     pub github: GitHubConfig,
