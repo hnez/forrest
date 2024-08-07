@@ -8,7 +8,17 @@ mod machines;
 async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
 
-    let config = config::ConfigFile::read("config.yaml");
+    let config_path = {
+        let mut args: Vec<String> = std::env::args().collect();
+
+        match args.len() {
+            1 => "config.yaml".to_owned(),
+            2 => args.remove(1),
+            _ => anyhow::bail!("Usage: {} [CONFIG]", args[0]),
+        }
+    };
+
+    let config = config::ConfigFile::read(&config_path);
 
     // We use a private key to authenticate as a GitHub application
     // and derive installation tokens from it.
