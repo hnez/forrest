@@ -6,7 +6,7 @@ use log::{debug, error, info};
 use octocrab::models::RunId;
 
 use crate::auth::Auth;
-use crate::config::{ConfigFile, Repository};
+use crate::config::{Config, Repository};
 use crate::jobs::Manager as JobManager;
 use crate::machines::OwnerAndRepo;
 
@@ -14,13 +14,13 @@ const MAX_NEW_RUN_AGE: TimeDelta = TimeDelta::days(2);
 
 pub struct Poller {
     auth: Arc<Auth>,
-    config: Arc<ConfigFile>,
+    config: Config,
     job_manager: JobManager,
     most_recent_run_id: Arc<Mutex<HashMap<OwnerAndRepo, RunId>>>,
 }
 
 impl Poller {
-    pub fn new(config: Arc<ConfigFile>, auth: Arc<Auth>, job_manager: JobManager) -> Self {
+    pub fn new(config: Config, auth: Arc<Auth>, job_manager: JobManager) -> Self {
         let most_recent_run_id = Arc::new(Mutex::new(HashMap::new()));
 
         Self {
@@ -165,6 +165,8 @@ impl Poller {
     }
 
     pub async fn poll_once(&self) -> octocrab::Result<()> {
+        let cfg = self.config.get();
+
         // These are runs for which we have jobs in "interesting" states,
         // like "pending", "queued" or "in_progress".
         let mut runs_of_interest = self.job_manager.runs_of_interest();
@@ -189,7 +191,7 @@ impl Poller {
 
                 debug!("Polling for user {user}");
 
-                if let Some(repos) = self.config.repositories.get(user) {
+                if let Some(repos) = cfg.repositories.get(user) {
                     self.auth.update_user(user, installation.id);
 
                     self.poll_installation(user, repos, &mut runs_of_interest)
@@ -211,7 +213,7 @@ impl Poller {
                 error!("Failed to poll for installations: {e}");
             }
 
-            tokio::time::sleep(self.config.github.polling_interval).await;
+            tokio::time::sleep(self.config.get().github.polling_interval).await;
         }
     }
 }

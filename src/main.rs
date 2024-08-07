@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let config = config::ConfigFile::read(&config_path);
+    let config = config::Config::new(&config_path)?;
 
     // We use a private key to authenticate as a GitHub application
     // and derive installation tokens from it.

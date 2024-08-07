@@ -167,6 +167,9 @@ impl Machine {
     }
 
     pub(super) fn kill(self, do_abort: bool, manager: &Manager) {
+        // TODO: use a cached version here so that the paths do not change.
+        let cfg = manager.config().get();
+
         if let Some(abort) = self.abort {
             if do_abort {
                 abort.abort()
@@ -175,7 +178,7 @@ impl Machine {
 
         let disk_path = self
             .triplet
-            .disk_image_path(&manager.config().host.base_dir, &self.runner_name);
+            .disk_image_path(&cfg.host.base_dir, &self.runner_name);
         let dps = disk_path.display();
 
         match std::fs::remove_file(&disk_path) {

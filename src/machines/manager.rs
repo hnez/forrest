@@ -10,7 +10,7 @@ use log::{debug, error, info, warn};
 
 use super::machine::Machine;
 use super::triplet::Triplet;
-use crate::{auth::Auth, config::ConfigFile};
+use crate::{auth::Auth, config::Config};
 
 // Machines should go from being booted to being registered with GitHub
 // in less than 15 minutes.
@@ -21,12 +21,12 @@ const START_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[derive(Clone)]
 pub struct Manager {
     auth: Arc<Auth>,
-    config: Arc<ConfigFile>,
+    config: Config,
     machines: Arc<Mutex<Vec<Machine>>>,
 }
 
 impl Manager {
-    pub fn new(config: Arc<ConfigFile>, auth: Arc<Auth>) -> Self {
+    pub fn new(config: Config, auth: Arc<Auth>) -> Self {
         Self {
             auth,
             config,
@@ -37,7 +37,7 @@ impl Manager {
         &self.auth
     }
 
-    pub(super) fn config(&self) -> &ConfigFile {
+    pub(super) fn config(&self) -> &Config {
         &self.config
     }
 
@@ -118,10 +118,10 @@ impl Manager {
         }
 
         // Add machines where the demand surpasses the supply
+        let cfg = self.config.get();
 
         for (triplet, count) in demand {
-            let machine_config = self
-                .config
+            let machine_config = cfg
                 .repositories
                 .get(triplet.owner())
                 .and_then(|repos| repos.get(triplet.repository()))
@@ -149,7 +149,8 @@ impl Manager {
         let mut machines = self.machines.lock().unwrap();
 
         let mut ram_available = {
-            let ram_total = self.config.host.ram.bytes();
+            let cfg = self.config.get();
+            let ram_total = cfg.host.ram.bytes();
             let ram_consumed = machines.iter().map(Machine::ram_consumed).sum();
             let ram_available = ram_total.saturating_sub(ram_consumed);
 
@@ -189,8 +190,10 @@ impl Manager {
     }
 
     async fn sweep(&self) {
+        let cfg = self.config.get();
+
         // Go through every user in our list ...
-        for (owner, repos) in self.config.repositories.iter() {
+        for (owner, repos) in cfg.repositories.iter() {
             let octocrab = match self.auth.user(owner) {
                 Some(oc) => oc,
                 None => {
@@ -283,7 +286,7 @@ impl Manager {
         // Go through each machine and check for timeouts
         let mut machines = self.machines.lock().unwrap();
 
-        let base_dir_path = Path::new(&self.config.host.base_dir);
+        let base_dir_path = Path::new(&cfg.host.base_dir);
 
         for index in (0..machines.len()).rev() {
             let machine = &machines[index];

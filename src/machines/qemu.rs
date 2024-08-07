@@ -10,7 +10,7 @@ use reflink_copy::reflink;
 use tokio::process::Command;
 
 use super::{config_fs::ConfigFs, Triplet};
-use crate::config::{ConfigFile, MachineConfig};
+use crate::config::{Config, MachineConfig};
 
 const QEMU_ARGS: &[&[&str]] = &[
     &["-enable-kvm"],
@@ -49,14 +49,16 @@ const CLOUD_INIT_IMAGE_SIZE: u64 = 1_000_000;
 const CLOUD_INIT_IMAGE_LABEL: &str = "CIDATA";
 
 pub(super) async fn run(
-    config: &ConfigFile,
+    config: &Config,
     runner_name: &str,
     triplet: &Triplet,
     machine_config: &MachineConfig,
     jit_config: &SelfHostedRunnerJitConfig,
 ) -> std::io::Result<()> {
+    let cfg = config.get();
+
     let run_dir_path = {
-        let path = triplet.run_dir_path(&config.host.base_dir, runner_name);
+        let path = triplet.run_dir_path(&cfg.host.base_dir, runner_name);
 
         create_dir_all(&path)?;
 
@@ -65,14 +67,14 @@ pub(super) async fn run(
 
     let (seed_dir, base_image) = match (&machine_config.seed, &machine_config.base) {
         (_, Some(base_triplet)) => {
-            let base_machine_image = base_triplet.machine_image_path(&config.host.base_dir);
+            let base_machine_image = base_triplet.machine_image_path(&cfg.host.base_dir);
 
             let mut visited = HashSet::new();
 
             let mut base_triplet = base_triplet.clone();
 
             loop {
-                let base_machine = config.repositories.get(base_triplet.owner())
+                let base_machine = cfg.repositories.get(base_triplet.owner())
                     .and_then(|repos| repos.get(base_triplet.repository()))
                     .and_then(|repo| repo.machines.get(base_triplet.machine_name()))
                     .ok_or_else(|| {
@@ -92,7 +94,7 @@ pub(super) async fn run(
                         base_triplet = next_base_triplet.clone();
                     }
                     (Some(seed), None) => {
-                        let seed_dir = config.host.base_dir.join("seeds").join(seed);
+                        let seed_dir = cfg.host.base_dir.join("seeds").join(seed);
 
                         break (seed_dir, base_machine_image);
                     }
@@ -105,7 +107,7 @@ pub(super) async fn run(
         (Some(seed), None) => {
             // The seed dir contains the initial disk image and the scripts to set
             // up the machine and job.
-            let seed_dir = config.host.base_dir.join("seeds").join(seed);
+            let seed_dir = cfg.host.base_dir.join("seeds").join(seed);
 
             let seed_image = {
                 // Search for a *.img or *.raw file in the seed directory.
@@ -142,7 +144,7 @@ pub(super) async fn run(
 
     // Check if we already have a machine image for this machine or if
     // we need to start from a seed image.
-    let machine_image = triplet.machine_image_path(&config.host.base_dir);
+    let machine_image = triplet.machine_image_path(&cfg.host.base_dir);
 
     let image = {
         let machine_image_exists_and_is_newer = {
@@ -162,7 +164,7 @@ pub(super) async fn run(
         }
     };
 
-    let disk_path = triplet.disk_image_path(&config.host.base_dir, runner_name);
+    let disk_path = triplet.disk_image_path(&cfg.host.base_dir, runner_name);
 
     // Create a copy on write copy of the disk image using reflink
     reflink(image, &disk_path)?;
@@ -271,7 +273,7 @@ pub(super) async fn run(
             .unwrap_or("")
             .trim();
 
-        let persistence_token = config
+        let persistence_token = cfg
             .repositories
             .get(triplet.owner())
             .and_then(|repos| repos.get(triplet.repository()))

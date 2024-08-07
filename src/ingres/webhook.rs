@@ -15,7 +15,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::time::timeout;
 
 use crate::auth::Auth;
-use crate::config::ConfigFile;
+use crate::config::{Config, ConfigFile};
 use crate::jobs::Manager as JobManager;
 use crate::machines::Triplet;
 
@@ -34,20 +34,18 @@ Content-Length: 0\r
 ";
 
 pub struct WebhookHandler {
-    config: Arc<ConfigFile>,
+    config: Config,
     auth: Arc<Auth>,
     job_manager: JobManager,
     listener: UnixListener,
 }
 
 impl WebhookHandler {
-    pub fn new(
-        config: Arc<ConfigFile>,
-        auth: Arc<Auth>,
-        job_manager: JobManager,
-    ) -> std::io::Result<Self> {
+    pub fn new(config: Config, auth: Arc<Auth>, job_manager: JobManager) -> std::io::Result<Self> {
         let listener = {
-            let path = config.host.base_dir.join("webhook.sock");
+            let cfg = config.get();
+
+            let path = cfg.host.base_dir.join("webhook.sock");
 
             let _ = std::fs::remove_file(&path);
 
@@ -69,7 +67,7 @@ impl WebhookHandler {
     pub async fn run(&mut self) -> std::io::Result<()> {
         loop {
             let (sock, _) = self.listener.accept().await?;
-            let config = self.config.clone();
+            let config = self.config.get();
             let auth = self.auth.clone();
             let job_manager = self.job_manager.clone();
 

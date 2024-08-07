@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use octocrab::models::InstallationId;
 use octocrab::Octocrab;
 
-use crate::config::ConfigFile;
+use crate::config::Config;
 
 pub struct Auth {
     app: Arc<Octocrab>,
@@ -12,10 +12,12 @@ pub struct Auth {
 }
 
 impl Auth {
-    pub fn new(config: &ConfigFile) -> anyhow::Result<Arc<Self>> {
-        let app_id = octocrab::models::AppId(config.github.app_id);
+    pub fn new(config: &Config) -> anyhow::Result<Arc<Self>> {
+        let cfg = config.get();
+
+        let app_id = octocrab::models::AppId(cfg.github.app_id);
         let token = {
-            let pem = std::fs::read(&config.github.jwt_key_file)?;
+            let pem = std::fs::read(&cfg.github.jwt_key_file)?;
             jsonwebtoken::EncodingKey::from_rsa_pem(&pem)?
         };
 
