@@ -96,9 +96,10 @@ pub struct GitHubConfig {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
 pub enum SeedOrBaseMachine {
-    Seed(String),
-    Base(Triplet),
+    Seed { seed: String },
+    Base { base: Triplet },
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -109,7 +110,7 @@ pub struct MachineConfig {
     pub cpus: u32,
     pub disk: SizeInBytes,
     #[serde(default)]
-    pub shared_directories: Vec<ExposedDirectory>,
+    pub shared: Vec<ExposedDirectory>,
 }
 
 #[derive(Debug, Deserialize)]

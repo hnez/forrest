@@ -64,7 +64,7 @@ pub(super) async fn run(
     };
 
     let (seed_dir, base_image) = match &machine_config.image {
-        SeedOrBaseMachine::Seed(seed) => {
+        SeedOrBaseMachine::Seed { seed } => {
             // The seed dir contains the initial disk image and the scripts to set
             // up the machine and job.
             let seed_dir = config.host.base_dir.join("seeds").join(seed);
@@ -99,8 +99,8 @@ pub(super) async fn run(
 
             (seed_dir, seed_image)
         }
-        SeedOrBaseMachine::Base(base_triplet) => {
-            let base_machine_image = triplet.machine_image_path(&config.host.base_dir);
+        SeedOrBaseMachine::Base { base: base_triplet } => {
+            let base_machine_image = base_triplet.machine_image_path(&config.host.base_dir);
 
             let mut visited = HashSet::new();
 
@@ -116,20 +116,22 @@ pub(super) async fn run(
                     })?;
 
                 match &base_machine.image {
-                    SeedOrBaseMachine::Seed(seed) => {
+                    SeedOrBaseMachine::Seed { seed } => {
                         let seed_dir = config.host.base_dir.join("seeds").join(seed);
 
                         break (seed_dir, base_machine_image);
                     }
-                    SeedOrBaseMachine::Base(base_base_triplet) => {
-                        if visited.insert(base_base_triplet.clone()) {
+                    SeedOrBaseMachine::Base {
+                        base: next_base_triplet,
+                    } => {
+                        if !visited.insert(next_base_triplet.clone()) {
                             let msg = format!(
                                 "Encountered loop while resolving base image for {triplet}"
                             );
                             return Err(std::io::Error::other(msg));
                         }
 
-                        base_triplet = base_base_triplet.clone();
+                        base_triplet = next_base_triplet.clone();
                     }
                 }
             }
@@ -208,21 +210,16 @@ pub(super) async fn run(
         )?
     };
 
-    let virtfs_args = machine_config.shared_directories.iter().flat_map(|dir| {
+    let virtfs_args = machine_config.shared.iter().flat_map(|dir| {
         let mut arg = OsString::new();
 
-        write!(
-            &mut arg,
-            "local,security_model=none,mount_tag={},path=",
-            dir.tag
-        )
-        .unwrap();
+        let tag = &dir.tag;
+        let readonly = if dir.writable { "off" } else { "on" };
+
+        write!(&mut arg, "local,security_model=none,",).unwrap();
+        write!(&mut arg, "mount_tag={tag},readonly={readonly},path=",).unwrap();
 
         arg.push(dir.path.as_os_str());
-
-        if !dir.writable {
-            write!(&mut arg, ",readonly").unwrap();
-        }
 
         ["-virtfs".into(), arg].into_iter()
     });
