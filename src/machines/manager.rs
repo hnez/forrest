@@ -18,53 +18,44 @@ use crate::{auth::Auth, config::Config};
 // and unpack the runner binary first.
 const START_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
+type Machines = HashMap<Triplet, Vec<Arc<Machine>>>;
+
 #[derive(Clone)]
 pub struct Manager {
     auth: Arc<Auth>,
     config: Config,
-    machines: Arc<Mutex<HashMap<Triplet, Vec<Machine>>>>,
+    machines: Arc<Mutex<Machines>>,
+}
+
+pub struct Rescheduler {
+    manager: Manager,
 }
 
 impl Manager {
     pub fn new(config: Config, auth: Arc<Auth>) -> Self {
+        let machines = Arc::new(Mutex::new(HashMap::new()));
+
         Self {
             auth,
             config,
-            machines: Arc::new(Mutex::new(HashMap::new())),
+            machines,
         }
     }
-    pub(super) fn auth(&self) -> &Auth {
-        &self.auth
-    }
 
-    pub(super) fn modify_machine<F, R>(
-        &self,
-        triplet: &Triplet,
-        runner_name: &str,
-        fun: F,
-    ) -> Option<R>
-    where
-        F: FnOnce(&mut Machine) -> R,
-    {
+    fn machines(&self) -> std::sync::MutexGuard<Machines> {
         let mut machines = self.machines.lock().unwrap();
-        let triplet_machines = machines.get_mut(triplet)?;
 
-        let machine = triplet_machines
-            .iter_mut()
-            .find(|machine| machine.runner_name() == runner_name)?;
+        // Use the opportunity to clean up the machines.
+        // Go through each entry in the HashMap<Triplet, Vec<Arc<Machine>>>,
+        // remove all Machines that have already stopped from the Vec
+        // and then all Triplets from the HashMap that have an empty Vec.
+        machines.retain(|_triplet, triplet_machines| {
+            triplet_machines.retain(|machine| !machine.status().is_stopped());
 
-        Some(fun(machine))
-    }
+            !triplet_machines.is_empty()
+        });
 
-    pub(super) fn remove_machine(&self, triplet: &Triplet, runner_name: &str) -> Option<Machine> {
-        let mut machines = self.machines.lock().unwrap();
-        let triplet_machines = machines.get_mut(triplet)?;
-
-        let index = triplet_machines
-            .iter()
-            .position(|machine| machine.runner_name() == runner_name)?;
-
-        Some(triplet_machines.swap_remove(index))
+        machines
     }
 
     pub fn status_feedback(
@@ -74,10 +65,21 @@ impl Manager {
         online: Option<bool>,
         busy: bool,
     ) -> bool {
-        self.modify_machine(triplet, runner_name, |machine| {
-            machine.status_feedback(online, busy)
-        })
-        .is_some()
+        let mut machines = self.machines();
+
+        let machine = machines.get_mut(triplet).and_then(|triplet_machines| {
+            triplet_machines
+                .iter()
+                .find(|machine| machine.runner_name() == runner_name)
+        });
+
+        match machine {
+            Some(machine) => {
+                machine.status_feedback(online, busy);
+                true
+            }
+            None => false,
+        }
     }
 
     pub fn update_demand<'a>(&self, requested: impl Iterator<Item = &'a Triplet>) {
@@ -97,7 +99,7 @@ impl Manager {
             debug!("  - {triplet}: {count}");
         }
 
-        let mut machines = self.machines.lock().unwrap();
+        let mut machines = self.machines();
 
         for (triplet, triplet_machines) in machines.iter_mut() {
             // Remove machines where the supply surpasses the demand
@@ -108,23 +110,19 @@ impl Manager {
             // We'd rather kill machines that have not started yet / are not
             // already waiting for jobs, so we place those at the end of the
             // list.
-            triplet_machines.sort_unstable_by_key(Machine::cost_to_kill);
+            triplet_machines.sort_unstable_by_key(|m| Machine::cost_to_kill(m));
 
-            for i in (0..triplet_machines.len()).rev() {
+            for machine in triplet_machines.iter().rev() {
                 // Machines that are already servicing jobs do not count into the
                 // supply/demand calculation.
-                if !triplet_machines[i].status().is_available() {
+                if !machine.status().is_available() {
                     continue;
                 }
 
                 // Reduce the demand for this machine type by one.
                 // If the demand is already zero, then kill the machine.
                 match demand.get_mut(triplet) {
-                    Some(0) | None => {
-                        let machine = triplet_machines.swap_remove(i);
-
-                        machine.kill(true, self);
-                    }
+                    Some(0) | None => machine.kill(true),
                     Some(count) => *count -= 1,
                 }
             }
@@ -139,23 +137,29 @@ impl Manager {
             }
 
             for _ in 0..count {
-                if let Some(m) = Machine::new(cfg.clone(), triplet.clone()) {
+                let cfg = cfg.clone();
+                let auth = self.auth.clone();
+                let rescheduler = self.rescheduler();
+
+                if let Some(m) = Machine::new(cfg, auth, rescheduler, triplet.clone()) {
                     machines.get_mut(&triplet).unwrap().push(m);
                 }
             }
         }
-
-        // Clean up the machines HashMap by removing entries containing an
-        // empty machines Vec.
-        machines.retain(|_, triplet_machines| !triplet_machines.is_empty());
 
         // We must release the lock before calling reschedule
         std::mem::drop(machines);
         self.reschedule();
     }
 
+    pub(super) fn rescheduler(&self) -> Rescheduler {
+        Rescheduler {
+            manager: self.clone(),
+        }
+    }
+
     pub(super) fn reschedule(&self) {
-        let mut machines = self.machines.lock().unwrap();
+        let mut machines = self.machines();
 
         let mut ram_available = {
             let cfg = self.config.get();
@@ -163,7 +167,7 @@ impl Manager {
             let ram_consumed = machines
                 .values()
                 .flat_map(|triplet_machines| triplet_machines.iter())
-                .map(Machine::ram_consumed)
+                .map(|m| Machine::ram_consumed(m))
                 .sum();
             let ram_available = ram_total.saturating_sub(ram_consumed);
 
@@ -182,7 +186,7 @@ impl Manager {
         machines_flat.sort_unstable_by_key(|m| Machine::ram_required(m));
 
         for machine in machines_flat.iter_mut().rev() {
-            machine.reschedule(self.clone(), &mut ram_available);
+            machine.reschedule(&mut ram_available);
         }
 
         debug!("Machines and their new state:");
@@ -292,29 +296,25 @@ impl Manager {
         }
 
         // Go through each machine and check for timeouts
-        let mut machines = self.machines.lock().unwrap();
+        let mut machines = self.machines();
 
         let base_dir_path = Path::new(&cfg.host.base_dir);
 
         for (triplet, triplet_machines) in machines.iter_mut() {
-            for index in (0..triplet_machines.len()).rev() {
-                let machine = &triplet_machines[index];
+            for machine in triplet_machines {
                 let runner_name = machine.runner_name();
 
-                let starting = machine.status().is_starting();
                 let start_timeout_elapsed = machine
-                    .runtime()
+                    .starting_duration()
                     .map(|rt| rt > START_TIMEOUT)
                     .unwrap_or(false);
 
-                if starting && start_timeout_elapsed {
+                if start_timeout_elapsed {
                     error!("Runner {runner_name} on {triplet} failed to come up in time");
 
                     let machine_image_path = triplet.machine_image_path(base_dir_path);
 
-                    // Remove the machine from the list and kill it.
-                    let machine = triplet_machines.swap_remove(index);
-                    machine.kill(true, self);
+                    machine.kill(true);
 
                     let broken_image_path = {
                         let mut filename = machine_image_path.file_name().unwrap().to_os_string();
@@ -350,5 +350,11 @@ impl Manager {
 
             tokio::time::sleep(std::time::Duration::from_secs(15 * 60)).await;
         }
+    }
+}
+
+impl Rescheduler {
+    pub fn reschedule(&self) {
+        self.manager.reschedule();
     }
 }

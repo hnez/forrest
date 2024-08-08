@@ -1,6 +1,6 @@
 use std::{
     io::ErrorKind,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -9,10 +9,13 @@ use octocrab::models::{actions::SelfHostedRunnerJitConfig, RunnerId};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use tokio::task::AbortHandle;
 
-use super::manager::Manager;
+use super::manager::Rescheduler;
 use super::qemu;
 use super::triplet::Triplet;
-use crate::config::{ConfigFile, MachineConfig};
+use crate::{
+    auth::Auth,
+    config::{ConfigFile, MachineConfig},
+};
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub(super) enum Status {
@@ -23,17 +26,24 @@ pub(super) enum Status {
     Waiting,
     Running,
     Stopping,
+    Stopped,
+}
+
+struct Inner {
+    status: Status,
+    abort: Option<AbortHandle>,
+    jit_config: Option<SelfHostedRunnerJitConfig>,
+    started: Option<Instant>,
 }
 
 pub(super) struct Machine {
     triplet: Triplet,
     machine_config: MachineConfig,
-    status: Status,
     runner_name: String,
+    auth: Arc<Auth>,
     cfg: Arc<ConfigFile>,
-    abort: Option<AbortHandle>,
-    jit_config: Option<SelfHostedRunnerJitConfig>,
-    started: Option<Instant>,
+    rescheduler: Rescheduler,
+    inner: Mutex<Inner>,
 }
 
 impl Status {
@@ -44,18 +54,18 @@ impl Status {
             | Self::Registered
             | Self::Starting
             | Self::Waiting => true,
-            Self::Running | Self::Stopping => false,
+            Self::Running | Self::Stopping | Self::Stopped => false,
         }
     }
 
-    pub(super) fn is_starting(&self) -> bool {
-        *self == Self::Starting
+    pub(super) fn is_stopped(&self) -> bool {
+        *self == Self::Stopped
     }
 }
 
 impl std::fmt::Display for Status {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        let name = match self {
+        f.write_str(match self {
             Self::Requested => "requested",
             Self::Registering => "registering",
             Self::Registered => "registered",
@@ -63,14 +73,24 @@ impl std::fmt::Display for Status {
             Self::Waiting => "waiting",
             Self::Running => "running",
             Self::Stopping => "stopping",
-        };
+            Self::Stopped => "stopped",
+        })
+    }
+}
 
-        write!(f, "{name}")
+impl Inner {
+    fn runner_id(&self) -> Option<RunnerId> {
+        self.jit_config.as_ref().map(|jc| jc.runner.id)
     }
 }
 
 impl Machine {
-    pub(super) fn new(cfg: Arc<ConfigFile>, triplet: Triplet) -> Option<Self> {
+    pub(super) fn new(
+        cfg: Arc<ConfigFile>,
+        auth: Arc<Auth>,
+        rescheduler: Rescheduler,
+        triplet: Triplet,
+    ) -> Option<Arc<Self>> {
         let machine_config = cfg
             .repositories
             .get(triplet.owner())
@@ -97,112 +117,140 @@ impl Machine {
             String::from_utf8(name).unwrap()
         };
 
-        Some(Self {
-            triplet,
-            machine_config,
+        let inner = Mutex::new(Inner {
             status: Status::Requested,
-            runner_name,
-            cfg,
             abort: None,
             jit_config: None,
             started: None,
-        })
+        });
+
+        Some(Arc::new(Self {
+            triplet,
+            machine_config,
+            rescheduler,
+            runner_name,
+            auth,
+            cfg,
+            inner,
+        }))
+    }
+
+    fn inner(&self) -> std::sync::MutexGuard<Inner> {
+        self.inner.lock().unwrap()
+    }
+
+    pub(super) fn status(&self) -> Status {
+        self.inner().status
     }
 
     pub(super) fn runner_name(&self) -> &str {
         &self.runner_name
     }
 
-    pub(super) fn status(&self) -> Status {
-        self.status
+    pub(super) fn starting_duration(&self) -> Option<Duration> {
+        let inner = self.inner();
+
+        match inner.status {
+            Status::Starting => inner.started.map(|s| s.elapsed()),
+            _ => None,
+        }
     }
 
-    fn runner_id(&self) -> Option<RunnerId> {
-        self.jit_config.as_ref().map(|jc| jc.runner.id)
-    }
+    fn register(self: &Arc<Self>, inner: &mut Inner) {
+        assert_eq!(inner.status, Status::Requested);
 
-    pub(super) fn runtime(&self) -> Option<Duration> {
-        self.started.map(|s| s.elapsed())
-    }
-
-    pub(super) fn register(&mut self, manager: Manager) {
-        assert_eq!(self.status, Status::Requested);
-
-        let triplet = self.triplet.clone();
-        let runner_name = self.runner_name.clone();
+        let machine = self.clone();
 
         let task = tokio::spawn(async move {
-            let installation_octocrab = manager.auth().user(triplet.owner()).unwrap();
+            let installation_octocrab = machine.auth.user(machine.triplet.owner()).unwrap();
 
-            let jit_config = triplet
-                .jit_config(&runner_name, &installation_octocrab)
+            let jit_config = machine
+                .triplet
+                .jit_config(&machine.runner_name, &installation_octocrab)
                 .await;
 
-            let jit_config = match jit_config {
-                Ok(jc) => jc,
-                Err(err) => {
-                    error!("Failed to register jit runner for {triplet}: {err}");
-                    manager.remove_machine(&triplet, &runner_name);
-                    return;
+            let mut inner = machine.inner();
+
+            match jit_config {
+                Ok(jc) => {
+                    debug!(
+                        "Registered jit runner for {}: {} {}",
+                        machine.triplet, machine.runner_name, jc.runner.id
+                    );
+
+                    inner.status = Status::Registered;
+                    inner.jit_config = Some(jc);
                 }
-            };
+                Err(err) => {
+                    error!(
+                        "Failed to register jit runner for {}: {err}",
+                        machine.triplet
+                    );
 
-            // Splitting Registered and Starting in two does not make sense yet.
-            // But we can move the registration to a separate method later.
-            manager.modify_machine(&triplet, &runner_name, |machine| {
-                machine.status = Status::Registered;
-                machine.jit_config = Some(jit_config.clone());
-                machine.abort = None;
-            });
+                    inner.status = Status::Stopped;
+                }
+            }
 
-            manager.reschedule();
+            // The task is about to end.
+            // No need to stop it from the outside anymore.
+            inner.abort = None;
+
+            // We must release the lock before calling reschedule
+            std::mem::drop(inner);
+            machine.rescheduler.reschedule();
         });
 
-        self.status = Status::Registering;
-        self.abort = Some(task.abort_handle());
+        inner.status = Status::Registering;
+        inner.abort = Some(task.abort_handle());
     }
 
-    pub(super) fn spawn(&mut self, manager: Manager) {
-        assert_eq!(self.status, Status::Registered);
+    fn spawn(self: &Arc<Self>, inner: &mut Inner) {
+        assert_eq!(inner.status, Status::Registered);
 
-        let triplet = self.triplet.clone();
-        let machine_config = self.machine_config.clone();
-        let runner_name = self.runner_name.clone();
-        let cfg = self.cfg.clone();
-        let jit_config = self.jit_config.as_ref().unwrap().clone();
+        let machine = self.clone();
 
         let task = tokio::spawn(async move {
-            let process = qemu::run(&cfg, &runner_name, &triplet, &machine_config, &jit_config);
+            let jit_config = machine.inner().jit_config.as_ref().unwrap().clone();
+            let process = qemu::run(
+                &machine.cfg,
+                &machine.runner_name,
+                &machine.triplet,
+                &machine.machine_config,
+                &jit_config,
+            );
 
             match process.await {
-                Ok(()) => info!("Machine {} {} has completed", triplet, runner_name),
-                Err(err) => error!("Failed to run machine {triplet} {runner_name}: {err}"),
+                Ok(()) => info!(
+                    "Machine {} {} has completed",
+                    machine.triplet, machine.runner_name,
+                ),
+                Err(err) => error!(
+                    "Failed to run machine {} {}: {err}",
+                    machine.triplet, machine.runner_name
+                ),
             }
 
-            // Remove ourself from the list of machines and run clean up code
-            // on the machine (but do not abort this task, as it is about to
-            // end anyways).
-            if let Some(machine) = manager.remove_machine(&triplet, &runner_name) {
-                machine.kill(false, &manager);
-            }
+            machine.kill(false);
 
             // Maybe schedule new machines in the place we freed.
-            manager.reschedule();
+            machine.rescheduler.reschedule();
         });
 
-        self.status = Status::Starting;
-        self.started = Some(Instant::now());
-        self.abort = Some(task.abort_handle());
+        inner.status = Status::Starting;
+        inner.started = Some(Instant::now());
+        inner.abort = Some(task.abort_handle());
     }
 
-    pub(super) fn reschedule(&mut self, manager: Manager, ram_available: &mut u64) {
-        match self.status {
-            Status::Requested => self.register(manager),
+    pub(super) fn reschedule(self: &Arc<Self>, ram_available: &mut u64) {
+        let mut inner = self.inner();
+
+        match inner.status {
+            Status::Requested => self.register(&mut inner),
             Status::Registered => {
                 let ram_required = self.ram_required();
 
                 if ram_required <= *ram_available {
-                    self.spawn(manager);
+                    self.spawn(&mut inner);
                     *ram_available -= ram_required;
                 } else {
                     debug!("Postpone starting {self} due to insufficient RAM {ram_available} vs. {ram_required}");
@@ -212,16 +260,21 @@ impl Machine {
             | Status::Starting
             | Status::Waiting
             | Status::Running
-            | Status::Stopping => {}
+            | Status::Stopping
+            | Status::Stopped => {}
         }
     }
 
-    pub(super) fn kill(mut self, do_abort: bool, manager: &Manager) {
-        if let Some(abort) = self.abort.take() {
+    pub(super) fn kill(self: &Arc<Self>, do_abort: bool) {
+        let mut inner_locked = self.inner();
+
+        if let Some(abort) = inner_locked.abort.take() {
             if do_abort {
                 abort.abort()
             }
         }
+
+        inner_locked.status = Status::Stopped;
 
         let disk_path = self
             .triplet
@@ -236,23 +289,35 @@ impl Machine {
             Err(e) => error!("Failed to remove disk image {dps}: {e}"),
         }
 
-        if let Some(runner_id) = self.runner_id() {
+        if let Some(runner_id) = inner_locked.runner_id() {
             // We have to de-register the runner
 
-            let triplet = self.triplet;
-            let runner_name = self.runner_name;
-            let octocrab = manager.auth().user(triplet.owner()).unwrap();
+            let machine = self.clone();
 
             tokio::spawn(async move {
+                let octocrab = machine.auth.user(machine.triplet.owner()).unwrap();
+
                 let res = octocrab
                     .actions()
-                    .delete_repo_runner(triplet.owner(), triplet.repository(), runner_id)
+                    .delete_repo_runner(
+                        machine.triplet.owner(),
+                        machine.triplet.repository(),
+                        runner_id,
+                    )
                     .await;
 
+                machine.inner().jit_config = None;
+
                 match res {
-                    Ok(()) => info!("De-registered {runner_name} on {triplet}"),
+                    Ok(()) => info!(
+                        "De-registered {} on {}",
+                        machine.runner_name, machine.triplet
+                    ),
                     Err(err) => {
-                        warn!("Failed to de-register {runner_name} from {triplet}: {err}")
+                        warn!(
+                            "Failed to de-register {} from {}: {err}",
+                            machine.runner_name, machine.triplet
+                        )
                     }
                 }
             });
@@ -260,13 +325,13 @@ impl Machine {
     }
 
     pub(super) fn cost_to_kill(&self) -> u32 {
-        match self.status {
+        match self.inner().status {
             Status::Requested => 0,
             Status::Registering => 1,
             Status::Registered => 2,
             Status::Starting => 3,
             Status::Waiting => 4,
-            Status::Running | Status::Stopping => u32::MAX,
+            Status::Running | Status::Stopping | Status::Stopped => u32::MAX,
         }
     }
 
@@ -277,16 +342,18 @@ impl Machine {
 
     // Get the amount of RAM (in bytes) the machine consumes
     pub(super) fn ram_consumed(&self) -> u64 {
-        match self.status {
-            Status::Requested | Status::Registering | Status::Registered => 0,
+        match self.inner().status {
+            Status::Requested | Status::Registering | Status::Registered | Status::Stopped => 0,
             Status::Starting | Status::Waiting | Status::Running | Status::Stopping => {
                 self.ram_required()
             }
         }
     }
 
-    pub(super) fn status_feedback(&mut self, online: Option<bool>, busy: bool) {
-        let new = match (&self.status, online, busy) {
+    pub(super) fn status_feedback(&self, online: Option<bool>, busy: bool) {
+        let mut inner = self.inner();
+
+        let new = match (&inner.status, online, busy) {
             // Stay in the current state
             (Status::Requested, _, _) => Status::Requested,
             (Status::Registering, _, _) => Status::Registering,
@@ -295,6 +362,7 @@ impl Machine {
             (Status::Waiting, Some(true) | None, false) => Status::Waiting,
             (Status::Running, Some(true) | None, true) => Status::Running,
             (Status::Stopping, _, _) => Status::Stopping,
+            (Status::Stopped, _, _) => Status::Stopped,
 
             // The action runner on the machine has registered itself
             // but does not run a job yet.
@@ -307,18 +375,18 @@ impl Machine {
             (Status::Waiting, Some(false), _)
             | (Status::Running, Some(false), _)
             | (Status::Running, _, false) => {
-                self.jit_config = None;
+                inner.jit_config = None;
 
                 Status::Stopping
             }
         };
 
-        if self.status != new {
+        if inner.status != new {
             info!(
                 "Machine {self} transitioned from state {} to {new}",
-                self.status
+                inner.status
             );
-            self.status = new;
+            inner.status = new;
         }
     }
 }
