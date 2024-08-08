@@ -1,5 +1,6 @@
 use std::{
     io::ErrorKind,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -11,7 +12,7 @@ use tokio::task::AbortHandle;
 use super::manager::Manager;
 use super::qemu;
 use super::triplet::Triplet;
-use crate::config::MachineConfig;
+use crate::config::{ConfigFile, MachineConfig};
 
 #[derive(PartialEq, Clone, Copy)]
 pub(super) enum Status {
@@ -28,6 +29,7 @@ pub(super) struct Machine {
     machine_config: MachineConfig,
     status: Status,
     runner_name: String,
+    cfg: Arc<ConfigFile>,
     abort: Option<AbortHandle>,
     runner_id: Option<RunnerId>,
     started: Option<Instant>,
@@ -71,7 +73,21 @@ impl std::fmt::Display for Status {
 }
 
 impl Machine {
-    pub(super) fn new(triplet: Triplet, machine_config: MachineConfig) -> Self {
+    pub(super) fn new(cfg: Arc<ConfigFile>, triplet: Triplet) -> Option<Self> {
+        let machine_config = cfg
+            .repositories
+            .get(triplet.owner())
+            .and_then(|repos| repos.get(triplet.repository()))
+            .and_then(|repo| repo.machines.get(triplet.machine_name()));
+
+        let machine_config = match machine_config {
+            Some(mc) => mc.to_owned(),
+            None => {
+                error!("Got request for unkown machine triplet: {triplet}");
+                return None;
+            }
+        };
+
         let runner_name = {
             // Build a runner name like "forrest-build-rHCiNOhFdypjtnfj"
 
@@ -84,15 +100,16 @@ impl Machine {
             String::from_utf8(name).unwrap()
         };
 
-        Self {
+        Some(Self {
             triplet,
             machine_config,
             status: Status::Requested,
             runner_name,
+            cfg,
             abort: None,
             runner_id: None,
             started: None,
-        }
+        })
     }
 
     pub(super) fn triplet(&self) -> &Triplet {
@@ -115,6 +132,7 @@ impl Machine {
         let triplet = self.triplet.clone();
         let machine_config = self.machine_config.clone();
         let runner_name = self.runner_name.clone();
+        let cfg = self.cfg.clone();
 
         let task = tokio::spawn(async move {
             let installation_octocrab = manager.auth().user(triplet.owner()).unwrap();
@@ -138,13 +156,7 @@ impl Machine {
                 machine.started = Some(Instant::now());
             });
 
-            let process = qemu::run(
-                manager.config(),
-                &runner_name,
-                &triplet,
-                &machine_config,
-                &jit_config,
-            );
+            let process = qemu::run(&cfg, &runner_name, &triplet, &machine_config, &jit_config);
 
             match process.await {
                 Ok(()) => info!("Machine {} {} has completed", triplet, runner_name),
@@ -167,9 +179,6 @@ impl Machine {
     }
 
     pub(super) fn kill(self, do_abort: bool, manager: &Manager) {
-        // TODO: use a cached version here so that the paths do not change.
-        let cfg = manager.config().get();
-
         if let Some(abort) = self.abort {
             if do_abort {
                 abort.abort()
@@ -178,7 +187,7 @@ impl Machine {
 
         let disk_path = self
             .triplet
-            .disk_image_path(&cfg.host.base_dir, &self.runner_name);
+            .disk_image_path(&self.cfg.host.base_dir, &self.runner_name);
         let dps = disk_path.display();
 
         match std::fs::remove_file(&disk_path) {

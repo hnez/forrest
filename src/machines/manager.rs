@@ -37,10 +37,6 @@ impl Manager {
         &self.auth
     }
 
-    pub(super) fn config(&self) -> &Config {
-        &self.config
-    }
-
     pub(super) fn modify_machine<F, R>(&self, runner_name: &str, fun: F) -> Option<R>
     where
         F: FnOnce(&mut Machine) -> R,
@@ -121,22 +117,10 @@ impl Manager {
         let cfg = self.config.get();
 
         for (triplet, count) in demand {
-            let machine_config = cfg
-                .repositories
-                .get(triplet.owner())
-                .and_then(|repos| repos.get(triplet.repository()))
-                .and_then(|repo| repo.machines.get(triplet.machine_name()));
-
-            let machine_config = match machine_config {
-                Some(mc) => mc,
-                None => {
-                    error!("Got request for unkown machine triplet: {triplet}");
-                    continue;
-                }
-            };
-
             for _ in 0..count {
-                machines.push(Machine::new(triplet.clone(), machine_config.clone()));
+                if let Some(m) = Machine::new(cfg.clone(), triplet.clone()) {
+                    machines.push(m);
+                }
             }
         }
 

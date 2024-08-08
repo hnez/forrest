@@ -10,7 +10,7 @@ use reflink_copy::reflink;
 use tokio::process::Command;
 
 use super::{config_fs::ConfigFs, Triplet};
-use crate::config::{Config, MachineConfig};
+use crate::config::{ConfigFile, MachineConfig};
 
 const QEMU_ARGS: &[&[&str]] = &[
     &["-enable-kvm"],
@@ -49,14 +49,12 @@ const CLOUD_INIT_IMAGE_SIZE: u64 = 1_000_000;
 const CLOUD_INIT_IMAGE_LABEL: &str = "CIDATA";
 
 pub(super) async fn run(
-    config: &Config,
+    cfg: &ConfigFile,
     runner_name: &str,
     triplet: &Triplet,
     machine_config: &MachineConfig,
     jit_config: &SelfHostedRunnerJitConfig,
 ) -> std::io::Result<()> {
-    let cfg = config.get();
-
     let run_dir_path = {
         let path = triplet.run_dir_path(&cfg.host.base_dir, runner_name);
 
