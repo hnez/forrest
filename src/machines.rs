@@ -1,7 +1,7 @@
 mod config_fs;
 mod machine;
 mod manager;
-mod qemu;
+mod run_dir;
 mod triplet;
 
 pub use manager::Manager;

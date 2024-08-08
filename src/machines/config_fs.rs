@@ -109,13 +109,9 @@ impl Drop for ConfigFs {
 }
 
 impl ConfigFsInspect {
-    pub fn read_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+    pub fn read_file(&self, path: &str, buf: &mut [u8]) -> std::io::Result<()> {
         let root_dir = self.filesystem.root_dir();
 
-        let mut buf = Vec::new();
-
-        root_dir.open_file(path)?.read_to_end(&mut buf)?;
-
-        Ok(buf)
+        root_dir.open_file(path)?.read_exact(buf)
     }
 }

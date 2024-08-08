@@ -18,7 +18,7 @@ use crate::{auth::Auth, config::Config};
 // and unpack the runner binary first.
 const START_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
-type Machines = HashMap<Triplet, Vec<Arc<Machine>>>;
+pub type Machines = HashMap<Triplet, Vec<Arc<Machine>>>;
 
 #[derive(Clone)]
 pub struct Manager {
@@ -122,7 +122,7 @@ impl Manager {
                 // Reduce the demand for this machine type by one.
                 // If the demand is already zero, then kill the machine.
                 match demand.get_mut(triplet) {
-                    Some(0) | None => machine.kill(true),
+                    Some(0) | None => machine.kill(),
                     Some(count) => *count -= 1,
                 }
             }
@@ -159,7 +159,7 @@ impl Manager {
     }
 
     pub(super) fn reschedule(&self) {
-        let mut machines = self.machines();
+        let machines = self.machines();
 
         let mut ram_available = {
             let cfg = self.config.get();
@@ -179,14 +179,14 @@ impl Manager {
         // We want to prioritize scheduling jobs requiring a lot of RAM,
         // because they are harder to place if we start all smaller jobs first.
         let mut machines_flat: Vec<_> = machines
-            .values_mut()
-            .flat_map(|triplet_machines| triplet_machines.iter_mut())
+            .values()
+            .flat_map(|triplet_machines| triplet_machines.iter())
             .collect();
 
         machines_flat.sort_unstable_by_key(|m| Machine::ram_required(m));
 
         for machine in machines_flat.iter_mut().rev() {
-            machine.reschedule(&mut ram_available);
+            machine.reschedule(&mut ram_available, &machines);
         }
 
         debug!("Machines and their new state:");
@@ -316,7 +316,7 @@ impl Manager {
 
                     let machine_image_path = triplet.machine_image_path(base_dir_path);
 
-                    machine.kill(true);
+                    machine.kill();
 
                     let broken_image_path = {
                         let mut filename = machine_image_path.file_name().unwrap().to_os_string();

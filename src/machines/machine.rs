@@ -1,21 +1,53 @@
-use std::{
-    io::ErrorKind,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::ffi::OsString;
+use std::fmt::Write;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use log::{debug, error, info, warn};
 use octocrab::models::{actions::SelfHostedRunnerJitConfig, RunnerId};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
-use tokio::task::AbortHandle;
+use tokio::{process::Command, task::AbortHandle};
 
-use super::manager::Rescheduler;
-use super::qemu;
 use super::triplet::Triplet;
+use super::{
+    manager::{Machines, Rescheduler},
+    run_dir::RunDir,
+};
 use crate::{
     auth::Auth,
     config::{ConfigFile, MachineConfig},
 };
+
+const QEMU_ARGS: &[&[&str]] = &[
+    &["-enable-kvm"],
+    &["-nodefaults"],
+    &["-nographic"],
+    &["-M", "type=q35,accel=kvm,smm=on"],
+    &["-cpu", "max"],
+    &["-global", "ICH9-LPC.disable_s3=1"],
+    &["-nic", "user,model=virtio-net-pci"],
+    &["-object", "rng-random,filename=/dev/urandom,id=rng0"],
+    &["-device", "virtio-rng-pci,rng=rng0,id=rng-device0"],
+    &["-device", "isa-serial,chardev=bootlog"],
+    &["-device", "isa-serial,chardev=telnet"],
+    &["-chardev", "file,id=bootlog,path=log.txt"],
+    &[
+        "-chardev",
+        "socket,id=telnet,server=on,wait=off,path=shell.sock",
+    ],
+    &[
+        "-drive",
+        "if=virtio,format=raw,discard=unmap,cache=unsafe,file=disk.img",
+    ],
+    &[
+        "-drive",
+        "if=virtio,format=raw,discard=unmap,cache=unsafe,file=cloud-init.img",
+    ],
+    &[
+        "-drive",
+        "if=virtio,format=raw,discard=unmap,cache=unsafe,file=job-config.img",
+    ],
+];
 
 #[derive(PartialEq, Clone, Copy, Debug)]
 pub(super) enum Status {
@@ -31,6 +63,7 @@ pub(super) enum Status {
 
 struct Inner {
     status: Status,
+    run_dir: Option<RunDir>,
     abort: Option<AbortHandle>,
     jit_config: Option<SelfHostedRunnerJitConfig>,
     started: Option<Instant>,
@@ -119,6 +152,7 @@ impl Machine {
 
         let inner = Mutex::new(Inner {
             status: Status::Requested,
+            run_dir: None,
             abort: None,
             jit_config: None,
             started: None,
@@ -141,6 +175,25 @@ impl Machine {
 
     pub(super) fn status(&self) -> Status {
         self.inner().status
+    }
+
+    pub(super) fn encoded_jit_config(&self) -> Option<String> {
+        self.inner()
+            .jit_config
+            .as_ref()
+            .map(|jc| jc.encoded_jit_config.clone())
+    }
+
+    pub(super) fn triplet(&self) -> &Triplet {
+        &self.triplet
+    }
+
+    pub(super) fn cfg(&self) -> &ConfigFile {
+        &self.cfg
+    }
+
+    pub(super) fn machine_config(&self) -> &MachineConfig {
+        &self.machine_config
     }
 
     pub(super) fn runner_name(&self) -> &str {
@@ -204,35 +257,80 @@ impl Machine {
         inner.abort = Some(task.abort_handle());
     }
 
+    async fn qemu(&self) -> std::io::Result<()> {
+        let virtfs_args = self.machine_config.shared.iter().flat_map(|dir| {
+            let mut arg = OsString::new();
+
+            let tag = &dir.tag;
+            let readonly = if dir.writable { "off" } else { "on" };
+
+            write!(&mut arg, "local,security_model=none,",).unwrap();
+            write!(&mut arg, "mount_tag={tag},readonly={readonly},path=",).unwrap();
+
+            arg.push(dir.path.as_os_str());
+
+            ["-virtfs".into(), arg].into_iter()
+        });
+
+        let mut qemu = {
+            let inner = self.inner();
+            let ram = self.machine_config.ram.megabytes().to_string();
+            let smp = self.machine_config.cpus.to_string();
+            let pwd = inner.run_dir.as_ref().unwrap();
+
+            let mut qemu = Command::new("/usr/bin/qemu-system-x86_64");
+
+            qemu.kill_on_drop(true)
+                .current_dir(pwd.path())
+                .arg("-m")
+                .arg(&ram)
+                .arg("-smp")
+                .arg(&smp)
+                .args(QEMU_ARGS.iter().flat_map(|arg_list| *arg_list))
+                .args(virtfs_args);
+
+            qemu
+        };
+
+        let status = qemu.status().await?;
+
+        match status.success() {
+            true => Ok(()),
+            false => {
+                let code = status.code().map(|c| c.to_string());
+                let dpc = code.as_deref().unwrap_or("<None>");
+
+                let msg = format!("The qemu process for job {self} exited with code: {dpc}",);
+
+                Err(std::io::Error::other(msg))
+            }
+        }
+    }
+
     fn spawn(self: &Arc<Self>, inner: &mut Inner) {
         assert_eq!(inner.status, Status::Registered);
 
         let machine = self.clone();
 
         let task = tokio::spawn(async move {
-            let jit_config = machine.inner().jit_config.as_ref().unwrap().clone();
-            let process = qemu::run(
-                &machine.cfg,
-                &machine.runner_name,
-                &machine.triplet,
-                &machine.machine_config,
-                &jit_config,
-            );
+            match machine.qemu().await {
+                Ok(()) => {
+                    info!("Machine {machine} has completed");
 
-            match process.await {
-                Ok(()) => info!(
-                    "Machine {} {} has completed",
-                    machine.triplet, machine.runner_name,
-                ),
-                Err(err) => error!(
-                    "Failed to run machine {} {}: {err}",
-                    machine.triplet, machine.runner_name
-                ),
+                    let mut inner = machine.inner();
+                    inner.run_dir.as_mut().unwrap().maybe_persist();
+                }
+                Err(err) => error!("Failed to run machine {machine}: {err}",),
             }
 
-            machine.kill(false);
+            // We are about to exit anyways.
+            // No need to abort this task anymore.
+            machine.inner().abort = None;
 
-            // Maybe schedule new machines in the place we freed.
+            // Update our status to stopped and some other cleanup.
+            machine.kill();
+
+            // Maybe schedule new machines in the space we freed.
             machine.rescheduler.reschedule();
         });
 
@@ -241,7 +339,7 @@ impl Machine {
         inner.abort = Some(task.abort_handle());
     }
 
-    pub(super) fn reschedule(self: &Arc<Self>, ram_available: &mut u64) {
+    pub(super) fn reschedule(self: &Arc<Self>, ram_available: &mut u64, machines: &Machines) {
         let mut inner = self.inner();
 
         match inner.status {
@@ -249,11 +347,23 @@ impl Machine {
             Status::Registered => {
                 let ram_required = self.ram_required();
 
-                if ram_required <= *ram_available {
+                if ram_required > *ram_available {
+                    debug!("Postpone starting {self} due to insufficient RAM {ram_available} vs. {ram_required}");
+                    return;
+                }
+
+                match RunDir::new(self, machines) {
+                    Ok(run_dir) => inner.run_dir = run_dir,
+                    Err(err) => {
+                        error!("Failed to set up run dir for {self}: {err}");
+                        inner.status = Status::Stopped;
+                        return;
+                    }
+                }
+
+                if inner.run_dir.is_some() {
                     self.spawn(&mut inner);
                     *ram_available -= ram_required;
-                } else {
-                    debug!("Postpone starting {self} due to insufficient RAM {ram_available} vs. {ram_required}");
                 }
             }
             Status::Registering
@@ -265,29 +375,14 @@ impl Machine {
         }
     }
 
-    pub(super) fn kill(self: &Arc<Self>, do_abort: bool) {
+    pub(super) fn kill(self: &Arc<Self>) {
         let mut inner_locked = self.inner();
 
         if let Some(abort) = inner_locked.abort.take() {
-            if do_abort {
-                abort.abort()
-            }
+            abort.abort()
         }
 
         inner_locked.status = Status::Stopped;
-
-        let disk_path = self
-            .triplet
-            .disk_image_path(&self.cfg.host.base_dir, &self.runner_name);
-        let dps = disk_path.display();
-
-        match std::fs::remove_file(&disk_path) {
-            Ok(()) => debug!("Removed disk file {dps}"),
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                debug!("Disk file {dps} was already removed")
-            }
-            Err(e) => error!("Failed to remove disk image {dps}: {e}"),
-        }
 
         if let Some(runner_id) = inner_locked.runner_id() {
             // We have to de-register the runner

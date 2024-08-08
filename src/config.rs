@@ -99,14 +99,32 @@ pub struct GitHubConfig {
     pub polling_interval: Duration,
 }
 
+#[derive(Deserialize, Debug, Clone, Copy)]
+pub enum SeedBasePolicy {
+    IfNewer,
+    Always,
+    Never,
+}
+
+impl Default for SeedBasePolicy {
+    fn default() -> Self {
+        Self::IfNewer
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineConfig {
-    pub seed: Option<String>,
+    pub seed: String,
     pub base: Option<Triplet>,
+
+    #[serde(default)]
+    pub use_base: SeedBasePolicy,
+
     pub ram: SizeInBytes,
     pub cpus: u32,
     pub disk: SizeInBytes,
+
     #[serde(default)]
     pub shared: Vec<ExposedDirectory>,
 }
