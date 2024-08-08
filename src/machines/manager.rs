@@ -223,7 +223,7 @@ impl Manager {
             };
 
             // ... visit each of their repositories ...
-            'repo: for repository in repos.keys() {
+            for repository in repos.keys() {
                 // ... and have a look at all of their registered runners ...
                 for page in 1u32.. {
                     let runners_page = octocrab
@@ -237,7 +237,7 @@ impl Manager {
                         Ok(rp) => rp,
                         Err(e) => {
                             error!("Failed to get runners for {owner}/{repository}: {e}");
-                            continue 'repo;
+                            break;
                         }
                     };
 
