@@ -4,10 +4,7 @@ mod ingres;
 mod jobs;
 mod machines;
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    pretty_env_logger::init();
-
+async fn forrest() -> anyhow::Result<()> {
     let config_path = {
         let mut args: Vec<String> = std::env::args().collect();
 
@@ -65,4 +62,12 @@ async fn main() -> anyhow::Result<()> {
     }?;
 
     Ok(())
+}
+
+fn main() -> anyhow::Result<()> {
+    pretty_env_logger::init();
+
+    let rt = tokio::runtime::Builder::new_current_thread().build()?;
+
+    rt.block_on(forrest())
 }
