@@ -15,6 +15,9 @@ async fn forrest() -> anyhow::Result<()> {
         }
     };
 
+    // Read the config file.
+    // The file will be re-read if it changed on disk at many points in the program,
+    // allowing changes to be made while jobs are being executed.
     let config = config::Config::new(&config_path)?;
 
     // We use a private key to authenticate as a GitHub application
@@ -48,7 +51,8 @@ async fn forrest() -> anyhow::Result<()> {
     // signaling readiness to systemd.
     poller.poll_once().await?;
 
-    // Notify systemd that we are ready to handle requests
+    // Notify systemd that we are ready to handle requests.
+    // This allows us to use the `Type=notify` systemd service type.
     if let Err(e) = sd_notify::notify(true, &[sd_notify::NotifyState::Ready]) {
         log::info!("Failed to notify systemd about service startup: {e}");
     }
