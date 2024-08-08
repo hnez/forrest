@@ -5,7 +5,7 @@ use std::{
 };
 
 use log::{debug, error, info, warn};
-use octocrab::models::RunnerId;
+use octocrab::models::{actions::SelfHostedRunnerJitConfig, RunnerId};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use tokio::task::AbortHandle;
 
@@ -18,6 +18,7 @@ use crate::config::{ConfigFile, MachineConfig};
 pub(super) enum Status {
     Requested,
     Registering,
+    Registered,
     Starting,
     Waiting,
     Running,
@@ -31,14 +32,18 @@ pub(super) struct Machine {
     runner_name: String,
     cfg: Arc<ConfigFile>,
     abort: Option<AbortHandle>,
-    runner_id: Option<RunnerId>,
+    jit_config: Option<SelfHostedRunnerJitConfig>,
     started: Option<Instant>,
 }
 
 impl Status {
     pub(super) fn is_available(&self) -> bool {
         match self {
-            Self::Requested | Self::Registering | Self::Starting | Self::Waiting => true,
+            Self::Requested
+            | Self::Registering
+            | Self::Registered
+            | Self::Starting
+            | Self::Waiting => true,
             Self::Running | Self::Stopping => false,
         }
     }
@@ -46,9 +51,12 @@ impl Status {
     pub(super) fn is_started(&self) -> bool {
         match self {
             Self::Requested => false,
-            Self::Registering | Self::Starting | Self::Waiting | Self::Running | Self::Stopping => {
-                true
-            }
+            Self::Registering
+            | Self::Registered
+            | Self::Starting
+            | Self::Waiting
+            | Self::Running
+            | Self::Stopping => true,
         }
     }
 
@@ -62,6 +70,7 @@ impl std::fmt::Display for Status {
         let name = match self {
             Self::Requested => "requested",
             Self::Registering => "registering",
+            Self::Registered => "registered",
             Self::Starting => "starting",
             Self::Waiting => "waiting",
             Self::Running => "running",
@@ -107,7 +116,7 @@ impl Machine {
             runner_name,
             cfg,
             abort: None,
-            runner_id: None,
+            jit_config: None,
             started: None,
         })
     }
@@ -118,6 +127,10 @@ impl Machine {
 
     pub(super) fn status(&self) -> Status {
         self.status
+    }
+
+    fn runner_id(&self) -> Option<RunnerId> {
+        self.jit_config.as_ref().map(|jc| jc.runner.id)
     }
 
     pub(super) fn runtime(&self) -> Option<Duration> {
@@ -146,9 +159,15 @@ impl Machine {
                 }
             };
 
+            // Splitting Registered and Starting in two does not make sense yet.
+            // But we can move the registration to a separate method later.
+            manager.modify_machine(&triplet, &runner_name, |machine| {
+                machine.status = Status::Registered;
+                machine.jit_config = Some(jit_config.clone());
+            });
+
             manager.modify_machine(&triplet, &runner_name, |machine| {
                 machine.status = Status::Starting;
-                machine.runner_id = Some(jit_config.runner.id);
                 machine.started = Some(Instant::now());
             });
 
@@ -174,8 +193,8 @@ impl Machine {
         self.abort = Some(task.abort_handle());
     }
 
-    pub(super) fn kill(self, do_abort: bool, manager: &Manager) {
-        if let Some(abort) = self.abort {
+    pub(super) fn kill(mut self, do_abort: bool, manager: &Manager) {
+        if let Some(abort) = self.abort.take() {
             if do_abort {
                 abort.abort()
             }
@@ -194,7 +213,7 @@ impl Machine {
             Err(e) => error!("Failed to remove disk image {dps}: {e}"),
         }
 
-        if let Some(runner_id) = self.runner_id {
+        if let Some(runner_id) = self.runner_id() {
             // We have to de-register the runner
 
             let triplet = self.triplet;
@@ -221,8 +240,9 @@ impl Machine {
         match self.status {
             Status::Requested => 0,
             Status::Registering => 1,
-            Status::Starting => 2,
-            Status::Waiting => 3,
+            Status::Registered => 2,
+            Status::Starting => 3,
+            Status::Waiting => 4,
             Status::Running | Status::Stopping => u32::MAX,
         }
     }
@@ -237,9 +257,12 @@ impl Machine {
     // Or will consume soon in case the machine is in the process of registering
     // a jit runner and will spawn qemu next.
     pub(super) fn ram_consumed(&self) -> u64 {
+        // TODO: once Self::spawn and Self::register are separated
+        // Status::Registering and Status::Registered can count as consuming no RAM.
         match self.status {
             Status::Requested => 0,
             Status::Registering
+            | Status::Registered
             | Status::Starting
             | Status::Waiting
             | Status::Running
@@ -252,6 +275,7 @@ impl Machine {
             // Stay in the current state
             (Status::Requested, _, _) => Status::Requested,
             (Status::Registering, _, _) => Status::Registering,
+            (Status::Registered, _, _) => Status::Registered,
             (Status::Starting, Some(false) | None, _) => Status::Starting,
             (Status::Waiting, Some(true) | None, false) => Status::Waiting,
             (Status::Running, Some(true) | None, true) => Status::Running,
@@ -268,7 +292,7 @@ impl Machine {
             (Status::Waiting, Some(false), _)
             | (Status::Running, Some(false), _)
             | (Status::Running, _, false) => {
-                self.runner_id = None;
+                self.jit_config = None;
 
                 Status::Stopping
             }
