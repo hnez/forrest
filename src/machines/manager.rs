@@ -194,6 +194,8 @@ impl Manager {
         for machine in machines_flat.iter() {
             debug!("  - {machine}: {}", machine.status());
         }
+
+        debug!("Available RAM after re-schedule: {ram_available}");
     }
 
     async fn sweep(&self) {
