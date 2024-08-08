@@ -22,7 +22,7 @@ const START_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 pub struct Manager {
     auth: Arc<Auth>,
     config: Config,
-    machines: Arc<Mutex<Vec<Machine>>>,
+    machines: Arc<Mutex<HashMap<Triplet, Vec<Machine>>>>,
 }
 
 impl Manager {
@@ -30,7 +30,7 @@ impl Manager {
         Self {
             auth,
             config,
-            machines: Arc::new(Mutex::new(Vec::new())),
+            machines: Arc::new(Mutex::new(HashMap::new())),
         }
     }
     pub(super) fn auth(&self) -> &Auth {
@@ -43,8 +43,11 @@ impl Manager {
     {
         let mut machines = self.machines.lock().unwrap();
 
+        // TODO: let this method take a triplet so we do not have to scan through
+        // all machine triplets.
         let machine = machines
-            .iter_mut()
+            .values_mut()
+            .flat_map(|triplet_machines| triplet_machines.iter_mut())
             .find(|machine| machine.runner_name() == runner_name)?;
 
         Some(fun(machine))
@@ -53,11 +56,19 @@ impl Manager {
     pub(super) fn remove_machine(&self, runner_name: &str) -> Option<Machine> {
         let mut machines = self.machines.lock().unwrap();
 
-        let index = machines
-            .iter()
-            .position(|machine| machine.runner_name() == runner_name)?;
+        // TODO: let this method take a triplet so we do not have to scan through
+        // all machine triplets.
+        for triplet_machines in machines.values_mut() {
+            let index = triplet_machines
+                .iter()
+                .position(|machine| machine.runner_name() == runner_name);
 
-        Some(machines.swap_remove(index))
+            if let Some(index) = index {
+                return Some(triplet_machines.swap_remove(index));
+            }
+        }
+
+        None
     }
 
     pub fn status_feedback(&self, runner_name: &str, online: Option<bool>, busy: bool) -> bool {
@@ -84,32 +95,34 @@ impl Manager {
 
         let mut machines = self.machines.lock().unwrap();
 
-        // Remove machines where the supply surpasses the demand
+        for (triplet, triplet_machines) in machines.iter_mut() {
+            // Remove machines where the supply surpasses the demand
 
-        // We will traverse the list of machines from end to start and once
-        // demand for a machine type reaches zero we will start killing
-        // machines.
-        // We'd rather kill machines that have not started yet / are not
-        // already waiting for jobs, so we place those at the end of the
-        // list.
-        machines.sort_unstable_by_key(Machine::cost_to_kill);
+            // We will traverse the list of machines from end to start and once
+            // demand for a machine type reaches zero we will start killing
+            // machines.
+            // We'd rather kill machines that have not started yet / are not
+            // already waiting for jobs, so we place those at the end of the
+            // list.
+            triplet_machines.sort_unstable_by_key(Machine::cost_to_kill);
 
-        for i in (0..machines.len()).rev() {
-            // Machines that are already servicing jobs do not count into the
-            // supply/demand calculation.
-            if !machines[i].status().is_available() {
-                continue;
-            }
-
-            // Reduce the demand for this machine type by one.
-            // If the demand is already zero, then kill the machine.
-            match demand.get_mut(machines[i].triplet()) {
-                Some(0) | None => {
-                    let machine = machines.swap_remove(i);
-
-                    machine.kill(true, self);
+            for i in (0..triplet_machines.len()).rev() {
+                // Machines that are already servicing jobs do not count into the
+                // supply/demand calculation.
+                if !triplet_machines[i].status().is_available() {
+                    continue;
                 }
-                Some(count) => *count -= 1,
+
+                // Reduce the demand for this machine type by one.
+                // If the demand is already zero, then kill the machine.
+                match demand.get_mut(triplet) {
+                    Some(0) | None => {
+                        let machine = triplet_machines.swap_remove(i);
+
+                        machine.kill(true, self);
+                    }
+                    Some(count) => *count -= 1,
+                }
             }
         }
 
@@ -117,12 +130,20 @@ impl Manager {
         let cfg = self.config.get();
 
         for (triplet, count) in demand {
+            if !machines.contains_key(&triplet) {
+                machines.insert(triplet.clone(), Vec::new());
+            }
+
             for _ in 0..count {
                 if let Some(m) = Machine::new(cfg.clone(), triplet.clone()) {
-                    machines.push(m);
+                    machines.get_mut(&triplet).unwrap().push(m);
                 }
             }
         }
+
+        // Clean up the machines HashMap by removing entries containing an
+        // empty machines Vec.
+        machines.retain(|_, triplet_machines| !triplet_machines.is_empty());
 
         // We must release the lock before calling reschedule
         std::mem::drop(machines);
@@ -135,7 +156,11 @@ impl Manager {
         let mut ram_available = {
             let cfg = self.config.get();
             let ram_total = cfg.host.ram.bytes();
-            let ram_consumed = machines.iter().map(Machine::ram_consumed).sum();
+            let ram_consumed = machines
+                .values()
+                .flat_map(|triplet_machines| triplet_machines.iter())
+                .map(Machine::ram_consumed)
+                .sum();
             let ram_available = ram_total.saturating_sub(ram_consumed);
 
             debug!("Re-scheduling machines. {ram_available} of {ram_total} available");
@@ -145,9 +170,14 @@ impl Manager {
 
         // We want to prioritize scheduling jobs requiring a lot of RAM,
         // because they are harder to place if we start all smaller jobs first.
-        machines.sort_unstable_by_key(Machine::ram_required);
+        let mut machines_flat: Vec<_> = machines
+            .values_mut()
+            .flat_map(|triplet_machines| triplet_machines.iter_mut())
+            .collect();
 
-        for machine in machines.iter_mut().rev() {
+        machines_flat.sort_unstable_by_key(|m| Machine::ram_required(m));
+
+        for machine in machines_flat.iter_mut().rev() {
             if machine.status().is_started() {
                 continue;
             }
@@ -163,12 +193,14 @@ impl Manager {
 
             machine.spawn(self.clone());
 
-            ram_available -= ram_required;
+            if machine.status().is_started() {
+                ram_available -= ram_required;
+            }
         }
 
         debug!("Machines and their new state:");
 
-        for machine in machines.iter() {
+        for machine in machines_flat.iter() {
             debug!("  - {machine}: {}", machine.status());
         }
     }
@@ -272,46 +304,49 @@ impl Manager {
 
         let base_dir_path = Path::new(&cfg.host.base_dir);
 
-        for index in (0..machines.len()).rev() {
-            let machine = &machines[index];
-            let triplet = machine.triplet();
-            let runner_name = machine.runner_name();
+        for (triplet, triplet_machines) in machines.iter_mut() {
+            for index in (0..triplet_machines.len()).rev() {
+                let machine = &triplet_machines[index];
+                let runner_name = machine.runner_name();
 
-            let starting = machine.status().is_starting();
-            let start_timeout_elapsed = machine
-                .runtime()
-                .map(|rt| rt > START_TIMEOUT)
-                .unwrap_or(false);
+                let starting = machine.status().is_starting();
+                let start_timeout_elapsed = machine
+                    .runtime()
+                    .map(|rt| rt > START_TIMEOUT)
+                    .unwrap_or(false);
 
-            if starting && start_timeout_elapsed {
-                error!("Runner {runner_name} on {triplet} failed to come up in time");
+                if starting && start_timeout_elapsed {
+                    error!("Runner {runner_name} on {triplet} failed to come up in time");
 
-                let machine_image_path = triplet.machine_image_path(base_dir_path);
+                    let machine_image_path = triplet.machine_image_path(base_dir_path);
 
-                // Remove the machine from the list and kill it.
-                let machine = machines.swap_remove(index);
-                machine.kill(true, self);
+                    // Remove the machine from the list and kill it.
+                    let machine = triplet_machines.swap_remove(index);
+                    machine.kill(true, self);
 
-                let broken_image_path = {
-                    let mut filename = machine_image_path.file_name().unwrap().to_os_string();
-                    filename.push(".broken");
-                    machine_image_path.parent().unwrap().join(filename)
-                };
+                    let broken_image_path = {
+                        let mut filename = machine_image_path.file_name().unwrap().to_os_string();
+                        filename.push(".broken");
+                        machine_image_path.parent().unwrap().join(filename)
+                    };
 
-                // Keep a copy of the broken image around for later investigation.
-                // But move the original away so that later invocations run from seed
-                // image again and hopefully succeed.
-                let res = std::fs::rename(&machine_image_path, &broken_image_path);
+                    // Keep a copy of the broken image around for later investigation.
+                    // But move the original away so that later invocations run from seed
+                    // image again and hopefully succeed.
+                    let res = std::fs::rename(&machine_image_path, &broken_image_path);
 
-                let mip = machine_image_path.display();
-                let bip = broken_image_path.display();
+                    let mip = machine_image_path.display();
+                    let bip = broken_image_path.display();
 
-                match res {
-                    Ok(()) => info!("Retained broken machine image as {bip}"),
-                    Err(e) if e.kind() == ErrorKind::NotFound => {
-                        info!("Machine image {mip} not found. Machine likely started from seed.")
+                    match res {
+                        Ok(()) => info!("Retained broken machine image as {bip}"),
+                        Err(e) if e.kind() == ErrorKind::NotFound => {
+                            info!(
+                                "Machine image {mip} not found. Machine likely started from seed."
+                            )
+                        }
+                        Err(e) => error!("Failed to remove broken disk image {bip}: {e}"),
                     }
-                    Err(e) => error!("Failed to remove broken disk image {bip}: {e}"),
                 }
             }
         }

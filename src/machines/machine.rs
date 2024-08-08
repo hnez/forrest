@@ -112,10 +112,6 @@ impl Machine {
         })
     }
 
-    pub(super) fn triplet(&self) -> &Triplet {
-        &self.triplet
-    }
-
     pub(super) fn runner_name(&self) -> &str {
         &self.runner_name
     }
