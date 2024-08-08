@@ -71,14 +71,14 @@ impl Manager {
             // even though that information may not have trickled through yet.
             // Make sure the runner does not become eligible for termination.
             self.machine_manager
-                .status_feedback(runner_name, Some(true), true);
+                .status_feedback(triplet, runner_name, Some(true), true);
         }
 
         if let (Status::Completed | Status::Failed, Some(runner_name)) = (&status, runner_name) {
             // We know that the runner this job is running on is no longer busy.
             // We do however not know if it is still online.
             self.machine_manager
-                .status_feedback(runner_name, None, false);
+                .status_feedback(triplet, runner_name, None, false);
         }
 
         let mut jobs = self.jobs.lock().unwrap();

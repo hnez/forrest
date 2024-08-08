@@ -37,43 +37,47 @@ impl Manager {
         &self.auth
     }
 
-    pub(super) fn modify_machine<F, R>(&self, runner_name: &str, fun: F) -> Option<R>
+    pub(super) fn modify_machine<F, R>(
+        &self,
+        triplet: &Triplet,
+        runner_name: &str,
+        fun: F,
+    ) -> Option<R>
     where
         F: FnOnce(&mut Machine) -> R,
     {
         let mut machines = self.machines.lock().unwrap();
+        let triplet_machines = machines.get_mut(triplet)?;
 
-        // TODO: let this method take a triplet so we do not have to scan through
-        // all machine triplets.
-        let machine = machines
-            .values_mut()
-            .flat_map(|triplet_machines| triplet_machines.iter_mut())
+        let machine = triplet_machines
+            .iter_mut()
             .find(|machine| machine.runner_name() == runner_name)?;
 
         Some(fun(machine))
     }
 
-    pub(super) fn remove_machine(&self, runner_name: &str) -> Option<Machine> {
+    pub(super) fn remove_machine(&self, triplet: &Triplet, runner_name: &str) -> Option<Machine> {
         let mut machines = self.machines.lock().unwrap();
+        let triplet_machines = machines.get_mut(triplet)?;
 
-        // TODO: let this method take a triplet so we do not have to scan through
-        // all machine triplets.
-        for triplet_machines in machines.values_mut() {
-            let index = triplet_machines
-                .iter()
-                .position(|machine| machine.runner_name() == runner_name);
+        let index = triplet_machines
+            .iter()
+            .position(|machine| machine.runner_name() == runner_name)?;
 
-            if let Some(index) = index {
-                return Some(triplet_machines.swap_remove(index));
-            }
-        }
-
-        None
+        Some(triplet_machines.swap_remove(index))
     }
 
-    pub fn status_feedback(&self, runner_name: &str, online: Option<bool>, busy: bool) -> bool {
-        self.modify_machine(runner_name, |machine| machine.status_feedback(online, busy))
-            .is_some()
+    pub fn status_feedback(
+        &self,
+        triplet: &Triplet,
+        runner_name: &str,
+        online: Option<bool>,
+        busy: bool,
+    ) -> bool {
+        self.modify_machine(triplet, runner_name, |machine| {
+            machine.status_feedback(online, busy)
+        })
+        .is_some()
     }
 
     pub fn update_demand<'a>(&self, requested: impl Iterator<Item = &'a Triplet>) {
@@ -259,6 +263,10 @@ impl Manager {
                             continue;
                         }
 
+                        let machine_name = &labels[2];
+
+                        let triplet = Triplet::new(owner, repository, machine_name);
+
                         // Is the runner online (the action runner software on the machine is
                         // connected to GitHubs servers) right now?
                         let online = match runner.status.as_str() {
@@ -275,7 +283,8 @@ impl Manager {
 
                         // Try to update the runner's online/busy status.
                         // Returns wether we know this runner or not.
-                        let found = self.status_feedback(&runner_name, Some(online), busy);
+                        let found =
+                            self.status_feedback(&triplet, &runner_name, Some(online), busy);
 
                         // The runners name and labels sound like we created them,
                         // but we do not know about it.

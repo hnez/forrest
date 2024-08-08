@@ -141,12 +141,12 @@ impl Machine {
                 Ok(jc) => jc,
                 Err(err) => {
                     error!("Failed to register jit runner for {triplet}: {err}");
-                    manager.remove_machine(&runner_name);
+                    manager.remove_machine(&triplet, &runner_name);
                     return;
                 }
             };
 
-            manager.modify_machine(&runner_name, |machine| {
+            manager.modify_machine(&triplet, &runner_name, |machine| {
                 machine.status = Status::Starting;
                 machine.runner_id = Some(jit_config.runner.id);
                 machine.started = Some(Instant::now());
@@ -162,7 +162,7 @@ impl Machine {
             // Remove ourself from the list of machines and run clean up code
             // on the machine (but do not abort this task, as it is about to
             // end anyways).
-            if let Some(machine) = manager.remove_machine(&runner_name) {
+            if let Some(machine) = manager.remove_machine(&triplet, &runner_name) {
                 machine.kill(false, &manager);
             }
 
