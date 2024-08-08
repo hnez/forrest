@@ -182,24 +182,7 @@ impl Manager {
         machines_flat.sort_unstable_by_key(|m| Machine::ram_required(m));
 
         for machine in machines_flat.iter_mut().rev() {
-            if machine.status().is_started() {
-                continue;
-            }
-
-            let ram_required = machine.ram_required();
-
-            if ram_required > ram_available {
-                debug!("Postpone starting {machine} due to insufficient RAM {ram_available} vs. {ram_required}");
-                continue;
-            }
-
-            info!("Spawn {machine}");
-
-            machine.spawn(self.clone());
-
-            if machine.status().is_started() {
-                ram_available -= ram_required;
-            }
+            machine.reschedule(self.clone(), &mut ram_available);
         }
 
         debug!("Machines and their new state:");

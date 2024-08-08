@@ -14,7 +14,7 @@ use super::qemu;
 use super::triplet::Triplet;
 use crate::config::{ConfigFile, MachineConfig};
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug)]
 pub(super) enum Status {
     Requested,
     Registering,
@@ -48,20 +48,8 @@ impl Status {
         }
     }
 
-    pub(super) fn is_started(&self) -> bool {
-        match self {
-            Self::Requested => false,
-            Self::Registering
-            | Self::Registered
-            | Self::Starting
-            | Self::Waiting
-            | Self::Running
-            | Self::Stopping => true,
-        }
-    }
-
     pub(super) fn is_starting(&self) -> bool {
-        matches!(self, Self::Starting)
+        *self == Self::Starting
     }
 }
 
@@ -137,11 +125,11 @@ impl Machine {
         self.started.map(|s| s.elapsed())
     }
 
-    pub(super) fn spawn(&mut self, manager: Manager) {
+    pub(super) fn register(&mut self, manager: Manager) {
+        assert_eq!(self.status, Status::Requested);
+
         let triplet = self.triplet.clone();
-        let machine_config = self.machine_config.clone();
         let runner_name = self.runner_name.clone();
-        let cfg = self.cfg.clone();
 
         let task = tokio::spawn(async move {
             let installation_octocrab = manager.auth().user(triplet.owner()).unwrap();
@@ -164,13 +152,26 @@ impl Machine {
             manager.modify_machine(&triplet, &runner_name, |machine| {
                 machine.status = Status::Registered;
                 machine.jit_config = Some(jit_config.clone());
+                machine.abort = None;
             });
 
-            manager.modify_machine(&triplet, &runner_name, |machine| {
-                machine.status = Status::Starting;
-                machine.started = Some(Instant::now());
-            });
+            manager.reschedule();
+        });
 
+        self.status = Status::Registering;
+        self.abort = Some(task.abort_handle());
+    }
+
+    pub(super) fn spawn(&mut self, manager: Manager) {
+        assert_eq!(self.status, Status::Registered);
+
+        let triplet = self.triplet.clone();
+        let machine_config = self.machine_config.clone();
+        let runner_name = self.runner_name.clone();
+        let cfg = self.cfg.clone();
+        let jit_config = self.jit_config.as_ref().unwrap().clone();
+
+        let task = tokio::spawn(async move {
             let process = qemu::run(&cfg, &runner_name, &triplet, &machine_config, &jit_config);
 
             match process.await {
@@ -189,8 +190,30 @@ impl Machine {
             manager.reschedule();
         });
 
-        self.status = Status::Registering;
+        self.status = Status::Starting;
+        self.started = Some(Instant::now());
         self.abort = Some(task.abort_handle());
+    }
+
+    pub(super) fn reschedule(&mut self, manager: Manager, ram_available: &mut u64) {
+        match self.status {
+            Status::Requested => self.register(manager),
+            Status::Registered => {
+                let ram_required = self.ram_required();
+
+                if ram_required <= *ram_available {
+                    self.spawn(manager);
+                    *ram_available -= ram_required;
+                } else {
+                    debug!("Postpone starting {self} due to insufficient RAM {ram_available} vs. {ram_required}");
+                }
+            }
+            Status::Registering
+            | Status::Starting
+            | Status::Waiting
+            | Status::Running
+            | Status::Stopping => {}
+        }
     }
 
     pub(super) fn kill(mut self, do_abort: bool, manager: &Manager) {
@@ -253,20 +276,12 @@ impl Machine {
     }
 
     // Get the amount of RAM (in bytes) the machine consumes
-    //
-    // Or will consume soon in case the machine is in the process of registering
-    // a jit runner and will spawn qemu next.
     pub(super) fn ram_consumed(&self) -> u64 {
-        // TODO: once Self::spawn and Self::register are separated
-        // Status::Registering and Status::Registered can count as consuming no RAM.
         match self.status {
-            Status::Requested => 0,
-            Status::Registering
-            | Status::Registered
-            | Status::Starting
-            | Status::Waiting
-            | Status::Running
-            | Status::Stopping => self.ram_required(),
+            Status::Requested | Status::Registering | Status::Registered => 0,
+            Status::Starting | Status::Waiting | Status::Running | Status::Stopping => {
+                self.ram_required()
+            }
         }
     }
 
