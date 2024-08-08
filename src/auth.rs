@@ -30,10 +30,15 @@ impl Auth {
         Ok(Arc::new(auth))
     }
 
+    /// Get an Octocrab instance authenticated as our GitHub application
     pub fn app(&self) -> Arc<Octocrab> {
         self.app.clone()
     }
 
+    /// Create or update a GitHub installation id to user name mapping
+    ///
+    /// This has to be called at least once before the `user()` method can
+    /// be used to log in as a specific user.
     pub fn update_user(&self, user: &str, id: InstallationId) {
         let mut users = self.users.lock().unwrap();
 
@@ -48,6 +53,10 @@ impl Auth {
         }
     }
 
+    /// Get an Octocrab instance authenticated as `user`
+    ///
+    /// For this to work the installation ID of said user has to be set first
+    /// via the `update_user()` method.
     pub fn user(&self, user: &str) -> Option<Arc<Octocrab>> {
         self.users
             .lock()

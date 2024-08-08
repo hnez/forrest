@@ -40,12 +40,12 @@ async fn forrest() -> anyhow::Result<()> {
     // The main method to learn about new jobs to run is via webhooks.
     // These are POST requests sent by GitHub notifying us about events.
     let mut webhook =
-        ingres::webhook::WebhookHandler::new(config.clone(), auth.clone(), job_manager.clone())?;
+        ingres::WebhookHandler::new(config.clone(), auth.clone(), job_manager.clone())?;
 
     // Our secondary source of information are periodic polls of the GitHub API.
     // These come in handy at startup or after network outages when we may have
     // missed webhooks.
-    let poller = ingres::poll::Poller::new(config.clone(), auth.clone(), job_manager);
+    let poller = ingres::Poller::new(config.clone(), auth.clone(), job_manager);
 
     // Make sure we can reach GitHub and our authentication works before
     // signaling readiness to systemd.
@@ -71,7 +71,8 @@ async fn forrest() -> anyhow::Result<()> {
 fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
 
-    let rt = tokio::runtime::Builder::new_current_thread().build()?;
-
-    rt.block_on(forrest())
+    // Run in a single-threaded async runtime.
+    tokio::runtime::Builder::new_current_thread()
+        .build()?
+        .block_on(forrest())
 }

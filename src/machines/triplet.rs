@@ -1,9 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use octocrab::{
-    models::{actions::SelfHostedRunnerJitConfig, RunnerGroupId},
-    Octocrab,
-};
+use log::debug;
 use serde::de::{Deserialize, Deserializer, Error};
 
 #[derive(PartialEq, Eq, Clone, Hash)]
@@ -33,6 +30,29 @@ impl OwnerAndRepo {
             repository: self.repository,
             machine_name: machine_name.to_string(),
         }
+    }
+
+    pub fn into_triplet_via_labels(self, labels: &[String]) -> Option<Triplet> {
+        if labels.len() != 3 {
+            debug!("Ignoring job with {} != 3 labels on {self}", labels.len());
+            return None;
+        }
+
+        let self_hosted = &labels[0];
+        let forrest = &labels[1];
+        let machine_name = &labels[2];
+
+        if self_hosted != "self-hosted" {
+            debug!("Ignoring job with '{self_hosted}' instead of 'self-hosted' as first label");
+            return None;
+        }
+
+        if forrest != "forrest" {
+            debug!("Ignoring job with '{forrest}' instead of 'forrest' as first label");
+            return None;
+        }
+
+        Some(self.into_triplet(machine_name))
     }
 
     pub fn owner(&self) -> &str {
@@ -97,32 +117,6 @@ impl Triplet {
             .join(&self.owner)
             .join(&self.repository)
             .join(format!("{}.img", self.machine_name))
-    }
-
-    pub(super) async fn jit_config(
-        &self,
-        runner_name: &str,
-        installation_octocrab: &Octocrab,
-    ) -> octocrab::Result<SelfHostedRunnerJitConfig> {
-        let labels = vec![
-            "self-hosted".to_owned(),
-            "forrest".to_owned(),
-            self.machine_name.clone(),
-        ];
-
-        let runner_group = RunnerGroupId(1);
-
-        installation_octocrab
-            .actions()
-            .create_repo_jit_runner_config(
-                &self.owner,
-                &self.repository,
-                runner_name,
-                runner_group,
-                labels,
-            )
-            .send()
-            .await
     }
 }
 

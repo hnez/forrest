@@ -1,8 +1,8 @@
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
-use std::{collections::HashMap, time::Duration};
+use std::time::{Duration, SystemTime};
 
 use log::error;
 use serde::{Deserialize, Deserializer};
@@ -248,6 +248,12 @@ impl Config {
         Ok(Config { inner })
     }
 
+    /// Get the current configuration
+    ///
+    /// This will check if the file changed on disk and if so will try to
+    /// re-read it.
+    /// If reading or parsing fails it will log an error and keep using the
+    /// old version.
     pub fn get(&self) -> Arc<ConfigFile> {
         self.inner.lock().unwrap().get()
     }

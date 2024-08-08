@@ -8,8 +8,8 @@ use std::{
 
 use log::{debug, error, info, warn};
 
-use super::machine::Machine;
 use super::triplet::Triplet;
+use super::{machine::Machine, OwnerAndRepo};
 use crate::{auth::Auth, config::Config};
 
 // Machines should go from being booted to being registered with GitHub
@@ -42,6 +42,22 @@ impl Manager {
         }
     }
 
+    /// Get an object that can be used to trigger a re-schedule on this manager.
+    ///
+    /// This makes it easier to reason about other parts of the software that may
+    /// trigger a re-schedule but should not be able to do anything else on the Manager.
+    pub(super) fn rescheduler(&self) -> Rescheduler {
+        Rescheduler {
+            manager: self.clone(),
+        }
+    }
+
+    /// Lock the list of machines and get a reference to it.
+    ///
+    /// This also removes already stopped machines from the list.
+    /// The lock does however not include the job states,
+    /// so machines may still enter the stopped state while this
+    /// lock is held.
     fn machines(&self) -> std::sync::MutexGuard<Machines> {
         let mut machines = self.machines.lock().unwrap();
 
@@ -152,13 +168,7 @@ impl Manager {
         self.reschedule();
     }
 
-    pub(super) fn rescheduler(&self) -> Rescheduler {
-        Rescheduler {
-            manager: self.clone(),
-        }
-    }
-
-    pub(super) fn reschedule(&self) {
+    fn reschedule(&self) {
         let machines = self.machines();
 
         let mut ram_available = {
@@ -213,11 +223,13 @@ impl Manager {
 
             // ... visit each of their repositories ...
             for repository in repos.keys() {
+                let oar = OwnerAndRepo::new(owner, repository);
+
                 // ... and have a look at all of their registered runners ...
                 for page in 1u32.. {
                     let runners_page = octocrab
                         .actions()
-                        .list_repo_self_hosted_runners(owner.as_str(), repository.as_str())
+                        .list_repo_self_hosted_runners(oar.owner(), oar.repository())
                         .page(page)
                         .send()
                         .await;
@@ -225,7 +237,7 @@ impl Manager {
                     let runners_page = match runners_page {
                         Ok(rp) => rp,
                         Err(e) => {
-                            error!("Failed to get runners for {owner}/{repository}: {e}");
+                            error!("Failed to get runners for {oar}: {e}");
                             break;
                         }
                     };
@@ -243,26 +255,23 @@ impl Manager {
                             continue;
                         }
 
-                        let labels: Vec<String> =
+                        let labels: Vec<_> =
                             runner.labels.into_iter().map(|label| label.name).collect();
 
-                        if labels.len() != 3 || labels[0] != "self-hosted" || labels[1] != "forrest"
-                        {
-                            error!("Runner {runner_name} on {owner}/{repository} has name starting in forrest- but wrong labels");
-                            continue;
-                        }
-
-                        let machine_name = &labels[2];
-
-                        let triplet = Triplet::new(owner, repository, machine_name);
+                        let triplet = match oar.clone().into_triplet_via_labels(&labels) {
+                            Some(triplet) => triplet,
+                            None => continue,
+                        };
 
                         // Is the runner online (the action runner software on the machine is
                         // connected to GitHubs servers) right now?
                         let online = match runner.status.as_str() {
                             "online" => true,
                             "offline" => false,
-                            _ => {
-                                error!("Runner {runner_name} on {owner}/{repository} has unknown online status: {}", runner.status);
+                            s => {
+                                error!(
+                                    "Runner {runner_name} on {oar} has unknown online status: {s}"
+                                );
                                 continue;
                             }
                         };
@@ -284,12 +293,12 @@ impl Manager {
                         if !found && !online && !busy {
                             let res = octocrab
                                 .actions()
-                                .delete_repo_runner(&owner, &repository, runner.id)
+                                .delete_repo_runner(oar.owner(), oar.repository(), runner.id)
                                 .await;
 
                             match res {
-                                Ok(()) => info!("De-registered orphaned runner {runner_name} on {owner}/{repository}"),
-                                Err(err) => warn!("Failed to de-register orphaned runner {runner_name} from {owner}/{repository}: {err}"),
+                                Ok(()) => info!("De-registered orphaned runner {runner_name} on {oar}"),
+                                Err(err) => warn!("Failed to de-register orphaned runner {runner_name} from {oar}: {err}"),
                             }
                         }
                     }
@@ -346,6 +355,11 @@ impl Manager {
         }
     }
 
+    /// Perform a periodic sweep on the machines.
+    ///
+    /// This means getting the list of runners from the API,
+    /// updating the state of our local runner structures and
+    /// killing machines that failed to register as runner;
     pub async fn janitor(&self) -> std::io::Result<()> {
         loop {
             self.sweep().await;
@@ -356,6 +370,10 @@ impl Manager {
 }
 
 impl Rescheduler {
+    /// Trigger a re-schedule on the underlying `Manager`.
+    ///
+    /// This should be called whenever a machine exits so that new ones can be spawned
+    /// in it's place
     pub fn reschedule(&self) {
         self.manager.reschedule();
     }

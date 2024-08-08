@@ -3,7 +3,7 @@ Description=Forrest GitHub Action Runner Runner
 After=network.target
 
 [Service]
-ExecStart=/usr/bin/forrest
+ExecStart=/usr/bin/forrest /etc/forrest/config.yaml
 Type=notify
 User=forrest
 WorkingDirectory=/var/lib/forrest

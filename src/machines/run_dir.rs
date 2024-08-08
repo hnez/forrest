@@ -18,8 +18,8 @@ const CLOUD_INIT_IMAGE_LABEL: &str = "CIDATA";
 
 pub(super) struct RunDir {
     run_dir: PathBuf,
-    machine_image: PathBuf,
     disk: PathBuf,
+    machine_image: PathBuf,
     _cloud_init: ConfigFs,
     job_config: Option<ConfigFs>,
     persistence_token: Option<String>,
@@ -33,13 +33,14 @@ fn not_found_none<V>(res: std::io::Result<V>) -> std::io::Result<Option<V>> {
     }
 }
 
+/// Pick one of two paths `a` and `b`
+///
+/// - Pick the one with the more recent modified date if both files exist.
+/// - Pick `b` if it exists but `a` does not.
+/// - Otherwise pick `a`, regardless of it existing or not.
 fn pick_newer<'p>(a: &'p Path, b: &'p Path) -> std::io::Result<&'p Path> {
     let modified_a = not_found_none(a.metadata().and_then(|meta| meta.modified()))?;
     let modified_b = not_found_none(b.metadata().and_then(|meta| meta.modified()))?;
-
-    // Pick the newer of the two files if both exist.
-    // Pick b if it exists but a does not.
-    // Else pick a, regardless of it existing or not.
 
     match (modified_a, modified_b) {
         (Some(ma), Some(mb)) => Ok(if ma > mb { a } else { b }),
@@ -48,9 +49,8 @@ fn pick_newer<'p>(a: &'p Path, b: &'p Path) -> std::io::Result<&'p Path> {
     }
 }
 
+/// Search for a *.img or *.raw file in the seed directory.
 fn find_seed_image(seed_dir: &Path) -> std::io::Result<PathBuf> {
-    // Search for a *.img or *.raw file in the seed directory.
-
     for entry in std::fs::read_dir(seed_dir)? {
         let entry = entry?;
         let meta = entry.metadata()?;
@@ -71,6 +71,18 @@ fn find_seed_image(seed_dir: &Path) -> std::io::Result<PathBuf> {
 }
 
 impl RunDir {
+    /// Create a directory for a machine run and populate it to match our qemu arguments
+    ///
+    /// This means placing a `disk.img` file in it to boot from,
+    /// a `cloud-init.img` that contains cloud-init configuration and
+    /// a `job-config.img` file that contains configuration for running the current job
+    /// and is used for feedback from the machine after completion.
+    ///
+    /// The disk file is based either on a previous run of this machine,
+    /// a previous run of another machine (a base machine that generates images)
+    /// or a seed file (a plain and unconfigured operating system image).
+    ///
+    /// Returns Ok(None) if the image file we want is not present yet.
     pub(super) fn new(machine: &Machine, machines: &Machines) -> std::io::Result<Option<Self>> {
         let triplet = machine.triplet();
         let cfg = machine.cfg();
@@ -183,6 +195,7 @@ impl RunDir {
         &self.run_dir
     }
 
+    /// Persist the disk image as new machine image if the correct persist file was written
     pub(super) fn maybe_persist(&mut self) {
         let persistence_token = match &self.persistence_token {
             Some(pt) => pt.as_bytes(),
@@ -244,6 +257,12 @@ impl RunDir {
 
 impl Drop for RunDir {
     fn drop(&mut self) {
+        // Remove the disk file, because it takes up by far the most space.
+        // The config files are also removed by their respective drop handler,
+        // but e.g. the log files qemu writes will not be deleted,
+        // as well as the run dir itself, because they take up little space and
+        // may be useful for debugging failed jobs and machines.
+
         let disk = self.run_dir.join("disk.img");
         let ds = disk.display();
 

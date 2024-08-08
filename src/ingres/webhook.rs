@@ -17,7 +17,7 @@ use tokio::time::timeout;
 use crate::auth::Auth;
 use crate::config::{Config, ConfigFile};
 use crate::jobs::Manager as JobManager;
-use crate::machines::Triplet;
+use crate::machines::OwnerAndRepo;
 
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBHOOK_SIZE_LIMIT: u64 = 4 * 1024 * 1024;
@@ -51,6 +51,7 @@ impl WebhookHandler {
 
             let listener = UnixListener::bind(&path)?;
 
+            // Allow anyone on the system to connect to the socket.
             std::fs::set_permissions(path, Permissions::from_mode(0o777))?;
 
             listener
@@ -126,6 +127,12 @@ async fn read_req<'a>(secret: &[u8], read: ReadHalf<'a>) -> std::io::Result<Webh
     let mut line = String::new();
 
     read.read_line(&mut line).await?;
+
+    // This is where I hide my custom webserver.
+    // Don't tell anyone though.
+    // The webserver crates in the tokio universe all looked a bit over the top.
+    // This one is very minimalistic and assumes that the only client it ever
+    // has to interact with is an nginx reverse proxy.
 
     if line.trim_end() != "POST /webhook HTTP/1.1" {
         return Err(std::io::Error::new(
@@ -228,34 +235,36 @@ async fn workflow_job_handler(
         _ => return,
     };
 
-    let repository = match event.repository {
-        Some(repo) => repo,
-        None => {
-            error!("Got workflow_job webhook event without repository field");
-            return;
-        }
+    let oar = {
+        let repository = match event.repository {
+            Some(repo) => repo,
+            None => {
+                error!("Got workflow_job webhook event without repository field");
+                return;
+            }
+        };
+
+        let owner = match repository.owner {
+            Some(owner) => owner.login,
+            None => {
+                error!("Got workflow_job webhook event without user in repository field");
+                return;
+            }
+        };
+
+        OwnerAndRepo::new(owner, repository.name)
     };
 
-    let owner = match repository.owner {
-        Some(owner) => owner.login,
-        None => {
-            error!("Got workflow_job webhook event without user in repository field");
-            return;
-        }
-    };
-
-    let repo_name = repository.name;
-
-    debug!("Got workflow_job webhook event for {owner}/{repo_name}!");
+    debug!("Got workflow_job webhook event for {oar}!");
 
     let exists = config
         .repositories
-        .get(&owner)
-        .and_then(|repos| repos.get(&repo_name))
+        .get(oar.owner())
+        .and_then(|repos| repos.get(oar.repository()))
         .is_some();
 
     if !exists {
-        info!("Refusing to service webhook from unlisted user/repo {owner}/{repo_name}");
+        info!("Refusing to service webhook from unlisted user/repo {oar}");
         return;
     }
 
@@ -276,26 +285,14 @@ async fn workflow_job_handler(
         }
     };
 
-    if workflow_job.labels.len() != 3 {
-        debug!(
-            "Ignoring job with {} != 3 labels on {owner}/{repo_name}",
-            workflow_job.labels.len()
-        );
-        return;
-    }
-
-    if workflow_job.labels[0] != "self-hosted" || workflow_job.labels[1] != "forrest" {
-        debug!("Ignoring job that does not have 'self-hosted' and 'forrest' as first labels on {owner}/{repo_name}");
-        return;
-    }
-
-    let machine_name = &workflow_job.labels[2];
-
     // Associate the user with their installation id so we can make API
     // requests on their behalf later.
-    auth.update_user(&owner, installation_id);
+    auth.update_user(oar.owner(), installation_id);
 
-    let triplet = Triplet::new(owner, repo_name, machine_name);
+    let triplet = match oar.into_triplet_via_labels(&workflow_job.labels) {
+        Some(triplet) => triplet,
+        None => return,
+    };
 
     job_manager.status_feedback(
         &triplet,

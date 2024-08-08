@@ -4,20 +4,24 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use log::{debug, error, info, warn};
+use octocrab::models::RunnerGroupId;
 use octocrab::models::{actions::SelfHostedRunnerJitConfig, RunnerId};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use tokio::{process::Command, task::AbortHandle};
 
+use super::manager::{Machines, Rescheduler};
+use super::run_dir::RunDir;
 use super::triplet::Triplet;
-use super::{
-    manager::{Machines, Rescheduler},
-    run_dir::RunDir,
-};
-use crate::{
-    auth::Auth,
-    config::{ConfigFile, MachineConfig},
-};
+use crate::auth::Auth;
+use crate::config::{ConfigFile, MachineConfig};
 
+// The arguments used to start the qemu process.
+//
+// These assume a specific filesystem structure,
+// as set up by `RunDir`.
+// More arguments are added in the `Machine::qemu()` method based on
+// the machine configuration.
+const QEMU_CMD: &str = "/usr/bin/qemu-system-x86_64";
 const QEMU_ARGS: &[&[&str]] = &[
     &["-enable-kvm"],
     &["-nodefaults"],
@@ -61,25 +65,30 @@ pub(super) enum Status {
     Stopped,
 }
 
+/// The mutable part of `Machine`.
+/// These are modified when the machine transitiones through the different states.
 struct Inner {
-    status: Status,
-    run_dir: Option<RunDir>,
     abort: Option<AbortHandle>,
     jit_config: Option<SelfHostedRunnerJitConfig>,
+    run_dir: Option<RunDir>,
     started: Option<Instant>,
+    status: Status,
 }
 
 pub(super) struct Machine {
-    triplet: Triplet,
-    machine_config: MachineConfig,
-    runner_name: String,
     auth: Arc<Auth>,
     cfg: Arc<ConfigFile>,
-    rescheduler: Rescheduler,
     inner: Mutex<Inner>,
+    machine_config: MachineConfig,
+    rescheduler: Rescheduler,
+    runner_name: String,
+    triplet: Triplet,
 }
 
 impl Status {
+    /// Is this machine available to process a new job?
+    ///
+    /// A machine that is already processing a job is not.
     pub(super) fn is_available(&self) -> bool {
         match self {
             Self::Requested
@@ -91,6 +100,11 @@ impl Status {
         }
     }
 
+    /// Is this machine in its final done state?
+    ///
+    /// Machines will not be in this state for long,
+    /// because the `machines::Manager` will remove them from the list the very next time
+    /// it locks its list of machines.
     pub(super) fn is_stopped(&self) -> bool {
         *self == Self::Stopped
     }
@@ -118,6 +132,18 @@ impl Inner {
 }
 
 impl Machine {
+    /// Get a new machine in the `Requested` state.
+    ///
+    /// # Arguments
+    ///
+    /// * `cfg` - The version of the config file this machine will use throughout
+    ///   its lifetime.
+    /// * `auth` - The authentication cache we use to register the jit runner with
+    ///   GitHub. This has to know about the user in `triplet` already.
+    /// * `rescheduler` - Used to trigger a reschedule from the `machines::Manager`
+    ///   once the machine exits and its ressources are available to other machines.
+    /// * `triplet` - The (owner, repository, machine name) triplet that requested
+    ///   this machine.
     pub(super) fn new(
         cfg: Arc<ConfigFile>,
         auth: Arc<Auth>,
@@ -173,10 +199,28 @@ impl Machine {
         self.inner.lock().unwrap()
     }
 
-    pub(super) fn status(&self) -> Status {
-        self.inner().status
+    /// How much effort went into this machine already?
+    ///
+    /// When demand for a machine type suddenly drops (because e.g. a run was canceled)
+    /// we need to decide which machines to kill.
+    /// It makes more sense to kill a machine that is e.g. not yet registered as runner
+    /// instead of one that is already booted and waiting for a job.
+    pub(super) fn cost_to_kill(&self) -> u32 {
+        match self.inner().status {
+            Status::Requested => 0,
+            Status::Registering => 1,
+            Status::Registered => 2,
+            Status::Starting => 3,
+            Status::Waiting => 4,
+            Status::Running | Status::Stopping | Status::Stopped => u32::MAX,
+        }
     }
 
+    pub(super) fn cfg(&self) -> &ConfigFile {
+        &self.cfg
+    }
+
+    /// The configuration string to pass to the action runner executable.
     pub(super) fn encoded_jit_config(&self) -> Option<String> {
         self.inner()
             .jit_config
@@ -184,22 +228,29 @@ impl Machine {
             .map(|jc| jc.encoded_jit_config.clone())
     }
 
-    pub(super) fn triplet(&self) -> &Triplet {
-        &self.triplet
+    /// The amount of RAM (in bytes) the machine may currently consume
+    pub(super) fn ram_consumed(&self) -> u64 {
+        match self.inner().status {
+            Status::Requested | Status::Registering | Status::Registered | Status::Stopped => 0,
+            Status::Starting | Status::Waiting | Status::Running | Status::Stopping => {
+                self.ram_required()
+            }
+        }
     }
 
-    pub(super) fn cfg(&self) -> &ConfigFile {
-        &self.cfg
-    }
-
-    pub(super) fn machine_config(&self) -> &MachineConfig {
-        &self.machine_config
+    /// Get the amount of RAM (in bytes) the machine would consume if it were started
+    pub(super) fn ram_required(&self) -> u64 {
+        self.machine_config.ram.bytes()
     }
 
     pub(super) fn runner_name(&self) -> &str {
         &self.runner_name
     }
 
+    /// The amount of time the machine has already spent in the starting state
+    ///
+    /// E.g. the machine was booted but we did not observe it registering as
+    /// runner yet via the API.
     pub(super) fn starting_duration(&self) -> Option<Duration> {
         let inner = self.inner();
 
@@ -209,17 +260,46 @@ impl Machine {
         }
     }
 
+    pub(super) fn status(&self) -> Status {
+        self.inner().status
+    }
+
+    pub(super) fn machine_config(&self) -> &MachineConfig {
+        &self.machine_config
+    }
+
+    pub(super) fn triplet(&self) -> &Triplet {
+        &self.triplet
+    }
+
+    /// Register this machine as a JIT GitHub runner
     fn register(self: &Arc<Self>, inner: &mut Inner) {
         assert_eq!(inner.status, Status::Requested);
 
         let machine = self.clone();
 
         let task = tokio::spawn(async move {
+            let triplet = machine.triplet();
             let installation_octocrab = machine.auth.user(machine.triplet.owner()).unwrap();
 
-            let jit_config = machine
-                .triplet
-                .jit_config(&machine.runner_name, &installation_octocrab)
+            let labels = vec![
+                "self-hosted".to_owned(),
+                "forrest".to_owned(),
+                triplet.machine_name().into(),
+            ];
+
+            let runner_group = RunnerGroupId(1);
+
+            let jit_config = installation_octocrab
+                .actions()
+                .create_repo_jit_runner_config(
+                    triplet.owner(),
+                    triplet.repository(),
+                    &machine.runner_name,
+                    runner_group,
+                    labels,
+                )
+                .send()
                 .await;
 
             let mut inner = machine.inner();
@@ -257,7 +337,9 @@ impl Machine {
         inner.abort = Some(task.abort_handle());
     }
 
+    /// Spawn the qemu process and wait for its completion
     async fn qemu(&self) -> std::io::Result<()> {
+        // Set up virtfs directory forwarding from the host to the machine.
         let virtfs_args = self.machine_config.shared.iter().flat_map(|dir| {
             let mut arg = OsString::new();
 
@@ -272,13 +354,14 @@ impl Machine {
             ["-virtfs".into(), arg].into_iter()
         });
 
+        // Assemble the complete set of arguments to pass to the qemu command.
         let mut qemu = {
             let inner = self.inner();
             let ram = self.machine_config.ram.megabytes().to_string();
             let smp = self.machine_config.cpus.to_string();
             let pwd = inner.run_dir.as_ref().unwrap();
 
-            let mut qemu = Command::new("/usr/bin/qemu-system-x86_64");
+            let mut qemu = Command::new(QEMU_CMD);
 
             qemu.kill_on_drop(true)
                 .current_dir(pwd.path())
@@ -292,6 +375,7 @@ impl Machine {
             qemu
         };
 
+        // Actually run the qemu command and wait for its completion.
         let status = qemu.status().await?;
 
         match status.success() {
@@ -307,6 +391,7 @@ impl Machine {
         }
     }
 
+    // Spawn qemu in the background and keep the machine state updated
     fn spawn(self: &Arc<Self>, inner: &mut Inner) {
         assert_eq!(inner.status, Status::Registered);
 
@@ -339,42 +424,7 @@ impl Machine {
         inner.abort = Some(task.abort_handle());
     }
 
-    pub(super) fn reschedule(self: &Arc<Self>, ram_available: &mut u64, machines: &Machines) {
-        let mut inner = self.inner();
-
-        match inner.status {
-            Status::Requested => self.register(&mut inner),
-            Status::Registered => {
-                let ram_required = self.ram_required();
-
-                if ram_required > *ram_available {
-                    debug!("Postpone starting {self} due to insufficient RAM {ram_available} vs. {ram_required}");
-                    return;
-                }
-
-                match RunDir::new(self, machines) {
-                    Ok(run_dir) => inner.run_dir = run_dir,
-                    Err(err) => {
-                        error!("Failed to set up run dir for {self}: {err}");
-                        inner.status = Status::Stopped;
-                        return;
-                    }
-                }
-
-                if inner.run_dir.is_some() {
-                    self.spawn(&mut inner);
-                    *ram_available -= ram_required;
-                }
-            }
-            Status::Registering
-            | Status::Starting
-            | Status::Waiting
-            | Status::Running
-            | Status::Stopping
-            | Status::Stopped => {}
-        }
-    }
-
+    /// Stop this machine, set the status to stopped and maybe de-register the jit runner.
     pub(super) fn kill(self: &Arc<Self>) {
         let mut inner_locked = self.inner();
 
@@ -419,32 +469,60 @@ impl Machine {
         }
     }
 
-    pub(super) fn cost_to_kill(&self) -> u32 {
-        match self.inner().status {
-            Status::Requested => 0,
-            Status::Registering => 1,
-            Status::Registered => 2,
-            Status::Starting => 3,
-            Status::Waiting => 4,
-            Status::Running | Status::Stopping | Status::Stopped => u32::MAX,
-        }
-    }
+    /// Reguest a move of the machine through its state machine
+    ///
+    /// This either triggers the registration as a jit runner or spawns the qemu process.
+    /// Other progress in the state machine is made via `status_feedback`.
+    ///
+    /// The `ram_available` argument is used to decide if the machine can be spawned
+    /// and is updated _if_ the machine was spawned.
+    ///
+    /// The `machines` argument is checked if the machine this machine is based on is
+    /// currently running.
+    /// If so the startup of this machine is delayed since a new base image is likely to
+    /// be available soon, which should be used instead of the current base image or
+    /// the machine image.
+    pub(super) fn reschedule(self: &Arc<Self>, ram_available: &mut u64, machines: &Machines) {
+        let mut inner = self.inner();
 
-    /// Get the amount of RAM (in bytes) the machine would consume if it were started
-    pub(super) fn ram_required(&self) -> u64 {
-        self.machine_config.ram.bytes()
-    }
+        match inner.status {
+            Status::Requested => self.register(&mut inner),
+            Status::Registered => {
+                let ram_required = self.ram_required();
 
-    // Get the amount of RAM (in bytes) the machine consumes
-    pub(super) fn ram_consumed(&self) -> u64 {
-        match self.inner().status {
-            Status::Requested | Status::Registering | Status::Registered | Status::Stopped => 0,
-            Status::Starting | Status::Waiting | Status::Running | Status::Stopping => {
-                self.ram_required()
+                if ram_required > *ram_available {
+                    debug!("Postpone starting {self} due to insufficient RAM {ram_available} vs. {ram_required}");
+                    return;
+                }
+
+                match RunDir::new(self, machines) {
+                    Ok(run_dir) => inner.run_dir = run_dir,
+                    Err(err) => {
+                        error!("Failed to set up run dir for {self}: {err}");
+                        inner.status = Status::Stopped;
+                        return;
+                    }
+                }
+
+                if inner.run_dir.is_some() {
+                    self.spawn(&mut inner);
+                    *ram_available -= ram_required;
+                }
             }
+            Status::Registering
+            | Status::Starting
+            | Status::Waiting
+            | Status::Running
+            | Status::Stopping
+            | Status::Stopped => {}
         }
     }
 
+    /// Update the state of the machine using feedback from jobs and runner API
+    ///
+    /// The feedback we get from job states may be able to tell us if the machine
+    /// is online (because it could not be processing a job otherwise) but it
+    /// can not tell us if the machine is offline, hence the `Option<bool>`.
     pub(super) fn status_feedback(&self, online: Option<bool>, busy: bool) {
         let mut inner = self.inner();
 

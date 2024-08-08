@@ -6,11 +6,16 @@ use octocrab::models::workflows::Status;
 use octocrab::models::{JobId, RunId};
 use tokio::task::JoinHandle;
 
+use super::job::Job;
 use crate::machines::Triplet;
 use crate::machines::{Manager as MachineManager, OwnerAndRepo};
 
-use super::job::Job;
-
+// The `status_feedback()` method is called for each webhook event
+// and each job that comes up in a poll.
+// If we start requesting machines as the jobs trickle in,
+// then we can not have a policy on when to start which machine.
+// Hence give jobs some time to trickle in before updating demand with
+// the machine manager.
 const UPDATE_SOON_DELAY: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
@@ -24,7 +29,8 @@ impl Manager {
     pub fn new(machine_manager: MachineManager) -> Self {
         let jobs = Arc::new(Mutex::new(Vec::new()));
 
-        // A placeholder task that finishes immediately
+        // A placeholder task that finishes immediately.
+        // Later an actual task will be placed in this spot.
         let update_soon_task = Arc::new(Mutex::new(tokio::spawn(async {})));
 
         Self {
@@ -37,7 +43,7 @@ impl Manager {
     /// Get GitHub workflow run ids for which we are interested in updates.
     ///
     /// This more or less means all runs with jobs that are not known to
-    /// have not completed or failed yet.
+    /// have completed or failed yet.
     pub fn runs_of_interest(&self) -> HashMap<OwnerAndRepo, HashSet<RunId>> {
         let mut res: HashMap<OwnerAndRepo, HashSet<RunId>> = HashMap::new();
 
@@ -58,6 +64,9 @@ impl Manager {
         res
     }
 
+    /// Update the status of a job
+    ///
+    /// This is called by the poller and webhook ingres tasks.
     pub fn status_feedback(
         &self,
         triplet: &Triplet,

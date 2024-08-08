@@ -10,6 +10,8 @@ use crate::config::{Config, Repository};
 use crate::jobs::Manager as JobManager;
 use crate::machines::OwnerAndRepo;
 
+/// The cut-off point when fetching the initial run list.
+/// Once a run is encountered that is older than this the search will stop.
 const MAX_NEW_RUN_AGE: TimeDelta = TimeDelta::days(2);
 
 pub struct Poller {
@@ -96,26 +98,15 @@ impl Poller {
             }
 
             for job in jobs.items {
-                let machine_name = {
-                    let labels = &job.labels;
-
-                    if labels.len() != 3 {
-                        debug!("Ignoring job with {} != 3 labels on {oar}", labels.len());
-
-                        continue;
-                    }
-
-                    if labels[0] != "self-hosted" || labels[1] != "forrest" {
-                        debug!("Ignoring job that does not have 'self-hosted' and 'forrest' as first labels on {oar}");
-
-                        continue;
-                    }
-
-                    &labels[2]
+                let triplet = match oar.clone().into_triplet_via_labels(&job.labels) {
+                    Some(triplet) => triplet,
+                    None => continue,
                 };
 
-                let triplet = oar.clone().into_triplet(machine_name);
-
+                // Update the job state in the job manager or create the job there
+                // in the first place.
+                // The job manager will then forward the demand for machines to the
+                // machine manager.
                 self.job_manager.status_feedback(
                     &triplet,
                     job.id,
@@ -144,7 +135,7 @@ impl Poller {
         Ok(())
     }
 
-    async fn poll_installation(
+    async fn poll_user(
         &self,
         user: &str,
         repos: &HashMap<String, Repository>,
@@ -164,6 +155,11 @@ impl Poller {
         }
     }
 
+    /// Poll the list of runs and jobs for each registered repository
+    ///
+    /// How far back to go in the run history is decided by `MAX_NEW_RUN_AGE`,
+    /// the most recent run id already known for the repository and the list
+    /// of runs the `crate::jobs::Manager` is interested in.
     pub async fn poll_once(&self) -> octocrab::Result<()> {
         let cfg = self.config.get();
 
@@ -171,6 +167,8 @@ impl Poller {
         // like "pending", "queued" or "in_progress".
         let mut runs_of_interest = self.job_manager.runs_of_interest();
 
+        // This pagination pattern comes up a lot in this file,
+        // since GitHub limits the number of entries we can get with each request.
         for page in 1u32.. {
             let installations = self
                 .auth
@@ -192,11 +190,19 @@ impl Poller {
                 debug!("Polling for user {user}");
 
                 if let Some(repos) = cfg.repositories.get(user) {
+                    // Create or update the user name <-> installation id association,
+                    // to allow this poller, but also e.g. the jit runner registraion
+                    // to authenticate using the user name.
                     self.auth.update_user(user, installation.id);
 
-                    self.poll_installation(user, repos, &mut runs_of_interest)
-                        .await;
+                    // Poll all repositories of registered for this user.
+                    // The list of repositories always comes from the config file
+                    // and not the API.
+                    self.poll_user(user, repos, &mut runs_of_interest).await;
                 } else {
+                    // If the runner application is listed as public then basically
+                    // anyone can install it.
+                    // We do however only serve users listed in our config file.
                     info!("Refusing to service unlisted user \"{user}\"");
                 }
             }
@@ -205,6 +211,9 @@ impl Poller {
         Ok(())
     }
 
+    /// Periodically poll the runs and jobs for each registered repository.
+    ///
+    /// The polling period is determined by the config file.
     pub async fn poll(&self) -> std::io::Result<()> {
         loop {
             debug!("Poll for pending jobs");
