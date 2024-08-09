@@ -10,7 +10,7 @@ use log::{debug, error, info, warn};
 
 use super::triplet::Triplet;
 use super::{machine::Machine, OwnerAndRepo};
-use crate::{auth::Auth, config::Config};
+use create::{auth::Auth, config::Config};
 
 // Machines should go from being booted to being registered with GitHub
 // in less than 15 minutes.
@@ -280,7 +280,7 @@ impl Manager {
                         let busy = runner.busy;
 
                         // Try to update the runner's online/busy status.
-                        // Returns wether we know this runner or not.
+                        // Returns whether we know this runner or not.
                         let found =
                             self.status_feedback(&triplet, &runner_name, Some(online), busy);
 

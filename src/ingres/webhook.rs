@@ -14,10 +14,10 @@ use tokio::net::unix::ReadHalf;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::time::timeout;
 
-use crate::auth::Auth;
-use crate::config::{Config, ConfigFile};
-use crate::jobs::Manager as JobManager;
-use crate::machines::OwnerAndRepo;
+use create::auth::Auth;
+use create::config::{Config, ConfigFile};
+use create::jobs::Manager as JobManager;
+use create::machines::OwnerAndRepo;
 
 const WEBHOOK_TIMEOUT: Duration = Duration::from_secs(5);
 const WEBHOOK_SIZE_LIMIT: u64 = 4 * 1024 * 1024;
@@ -120,7 +120,7 @@ async fn webook_handler(
 }
 
 async fn read_req<'a>(secret: &[u8], read: ReadHalf<'a>) -> std::io::Result<WebhookEvent> {
-    // Limit the maxium request size and buffer the stream so we can read
+    // Limit the maximum request size and buffer the stream so we can read
     // individual bytes like when searching for a '\n'.
     let mut read = BufReader::new(read.take(WEBHOOK_SIZE_LIMIT));
 

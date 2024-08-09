@@ -76,7 +76,7 @@ jobs:
           echo "$PERSISTENCE_TOKEN" > ~/config/persist
 ```
 
-Differences between public GitHub runners and runnign on Forrest:
+Differences between public GitHub runners and running on Forrest:
 
 - Jobs specify which `<machine type>` to use via the `runs-on` parameter.
 - The images provided by e.g. Debian are very minimal and un-configured

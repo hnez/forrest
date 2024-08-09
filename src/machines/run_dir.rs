@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use log::{debug, error, info, warn};
 use reflink_copy::reflink;
 
-use crate::config::SeedBasePolicy;
+use create::config::SeedBasePolicy;
 
 use super::config_fs::ConfigFs;
 use super::machine::Machine;

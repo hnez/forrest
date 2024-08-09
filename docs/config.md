@@ -182,7 +182,7 @@ The format of the base machine is `<owner>/<repository>/<machine_type>`.
 > Derived machines will delay their startup until no instances of the machine
 > they are based on are running.
 > This works around race conditions between a job finishing from GitHub's point
-> of view and the machine having stopped sucessfully and persisted it's disk
+> of view and the machine having stopped successfully and persisted it's disk
 > image.
 
 # `repositories.<user>.<repository>.machines.<machine type>.base_image`
@@ -232,7 +232,7 @@ One of:
 - `if_newer` (default) - Use the base (e.g. `base_image` or `base_machine`) instead of an
    existing machine image from a previous run if the base is newer than the
    machine image.
-- `always` - Always use the base and never re-use a machine image.
+- `always` - Always use the base and never reuse a machine image.
   This makes sense for machines that are only used to generate machine images for
   use as base in machines, which should however always do so from scratch.
 - `never` - Always run from a previous machine image.

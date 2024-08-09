@@ -22,10 +22,10 @@ server {
     ...
 
     location /webhook {
-        proxy_pass http://unix:[ABOLUTE PATH TO YOUR FORREST ENV]/webhook.sock:/webhook;
+        proxy_pass http://unix:[ABSOLUTE PATH TO YOUR FORREST ENV]/webhook.sock:/webhook;
         proxy_http_version 1.1;
     }
 }
 ```
 
-Replace `[ABOLUTE PATH TO YOUR FORREST ENV]` with the appropriate path.
+Replace `[ABSOLUTE PATH TO YOUR FORREST ENV]` with the appropriate path.

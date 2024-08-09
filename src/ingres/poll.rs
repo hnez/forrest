@@ -5,10 +5,10 @@ use chrono::{TimeDelta, Utc};
 use log::{debug, error, info};
 use octocrab::models::RunId;
 
-use crate::auth::Auth;
-use crate::config::{Config, Repository};
-use crate::jobs::Manager as JobManager;
-use crate::machines::OwnerAndRepo;
+use create::auth::Auth;
+use create::config::{Config, Repository};
+use create::jobs::Manager as JobManager;
+use create::machines::OwnerAndRepo;
 
 /// The cut-off point when fetching the initial run list.
 /// Once a run is encountered that is older than this the search will stop.
@@ -159,7 +159,7 @@ impl Poller {
     ///
     /// How far back to go in the run history is decided by `MAX_NEW_RUN_AGE`,
     /// the most recent run id already known for the repository and the list
-    /// of runs the `crate::jobs::Manager` is interested in.
+    /// of runs the `create::jobs::Manager` is interested in.
     pub async fn poll_once(&self) -> octocrab::Result<()> {
         let cfg = self.config.get();
 
@@ -191,7 +191,7 @@ impl Poller {
 
                 if let Some(repos) = cfg.repositories.get(user) {
                     // Create or update the user name <-> installation id association,
-                    // to allow this poller, but also e.g. the jit runner registraion
+                    // to allow this poller, but also e.g. the jit runner registration
                     // to authenticate using the user name.
                     self.auth.update_user(user, installation.id);
 

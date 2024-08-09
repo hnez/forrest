@@ -12,8 +12,8 @@ use tokio::{process::Command, task::AbortHandle};
 use super::manager::{Machines, Rescheduler};
 use super::run_dir::RunDir;
 use super::triplet::Triplet;
-use crate::auth::Auth;
-use crate::config::{ConfigFile, MachineConfig};
+use create::auth::Auth;
+use create::config::{ConfigFile, MachineConfig};
 
 // The arguments used to start the qemu process.
 //
@@ -140,7 +140,7 @@ impl Machine {
     /// * `auth` - The authentication cache we use to register the jit runner with
     ///   GitHub. This has to know about the user in `triplet` already.
     /// * `rescheduler` - Used to trigger a reschedule from the `machines::Manager`
-    ///   once the machine exits and its ressources are available to other machines.
+    ///   once the machine exits and its resources are available to other machines.
     /// * `triplet` - The (owner, repository, machine name) triplet that requested
     ///   this machine.
     pub(super) fn new(
@@ -156,7 +156,7 @@ impl Machine {
             .and_then(|repo| repo.machines.get(triplet.machine_name()));
 
         if machine_config.is_none() {
-            error!("Got request for unkown machine triplet: {triplet}");
+            error!("Got request for unknown machine triplet: {triplet}");
             return None;
         }
 

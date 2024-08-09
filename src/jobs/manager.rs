@@ -7,8 +7,8 @@ use octocrab::models::{JobId, RunId};
 use tokio::task::JoinHandle;
 
 use super::job::Job;
-use crate::machines::Triplet;
-use crate::machines::{Manager as MachineManager, OwnerAndRepo};
+use create::machines::Triplet;
+use create::machines::{Manager as MachineManager, OwnerAndRepo};
 
 // The `status_feedback()` method is called for each webhook event
 // and each job that comes up in a poll.
@@ -127,7 +127,7 @@ impl Manager {
 
     /// Schedule telling the machine manager how many machines we need
     ///
-    /// When a worflow is started it may kick of multiple jobs at once.
+    /// When a workflow is started it may kick of multiple jobs at once.
     /// We do however not get all the webhook events at once, but one after
     /// the other.
     /// We do however have a bit of a heuristic of which jobs to schedule
