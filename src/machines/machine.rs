@@ -12,8 +12,8 @@ use tokio::{process::Command, task::AbortHandle};
 use super::manager::{Machines, Rescheduler};
 use super::run_dir::RunDir;
 use super::triplet::Triplet;
-use create::auth::Auth;
-use create::config::{ConfigFile, MachineConfig};
+use crate::auth::Auth;
+use crate::config::{ConfigFile, MachineConfig};
 
 // The arguments used to start the qemu process.
 //

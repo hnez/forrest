@@ -7,8 +7,8 @@ use octocrab::models::{JobId, RunId};
 use tokio::task::JoinHandle;
 
 use super::job::Job;
-use create::machines::Triplet;
-use create::machines::{Manager as MachineManager, OwnerAndRepo};
+use crate::machines::Triplet;
+use crate::machines::{Manager as MachineManager, OwnerAndRepo};
 
 // The `status_feedback()` method is called for each webhook event
 // and each job that comes up in a poll.

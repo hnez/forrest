@@ -1,7 +1,7 @@
 use octocrab::models::workflows::Status;
 use octocrab::models::{JobId, RunId};
 
-use create::machines::Triplet;
+use crate::machines::Triplet;
 
 pub(super) struct Job {
     triplet: Triplet,

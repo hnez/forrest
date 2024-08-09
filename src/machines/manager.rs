@@ -10,7 +10,7 @@ use log::{debug, error, info, warn};
 
 use super::triplet::Triplet;
 use super::{machine::Machine, OwnerAndRepo};
-use create::{auth::Auth, config::Config};
+use crate::{auth::Auth, config::Config};
 
 // Machines should go from being booted to being registered with GitHub
 // in less than 15 minutes.

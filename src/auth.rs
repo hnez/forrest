@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use octocrab::models::InstallationId;
 use octocrab::Octocrab;
 
-use create::config::Config;
+use crate::config::Config;
 
 pub struct Auth {
     app: Arc<Octocrab>,
