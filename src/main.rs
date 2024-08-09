@@ -73,6 +73,8 @@ fn main() -> anyhow::Result<()> {
 
     // Run in a single-threaded async runtime.
     tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
         .build()?
         .block_on(forrest())
 }
