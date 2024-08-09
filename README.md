@@ -7,221 +7,80 @@ Forrest - A GitHub Action Runner Runner
                                         ┃      Run      ┃
                                         ┗━━━┯━━━━━━━┯━━━┛
 
-> CI jobs are like a box of chocolates. You never know what you're gonna get.
->
->       - Some dude on GitHub
+> Now you wouldn’t believe me if I told you, but I could run like the wind blows.<br/>
+> From that day on, if I was goin’ somewhere, I was runnin’!
 
-And that's why Forrest runs GitHub actions in single-use virtual machines.
+Forrest takes a single host computer and uses it to run multiple virtual
+machines with GitHub action runners in them.
 
-How it works
-------------
+The Gist
+--------
 
-Right now Forrest is designed to concurrently run multiple virtual machines
-as GitHub action runners on a single host computer.
-Running virtual machines across a cluster of hosts is currently out of scope.
+The virtual machine disk images used are ephermal and removed after a run
+completes, but may optionally be persisted to enable pre-generation of images
+or to speed up builds.
 
-The main ingredients to set up Forrest are:
-
-- A host
-
-  The host needs to be reachable from the internet so that GitHub can deliver
-  webhooks to it, to notify it about e.g. new jobs to run.
-
-  The host also needs to use a reflink-capable filesystem, e.g. Btrfs or XFS,
-  so that disk images can be copied around cheaply.
-
-- A GitHub application
-
-  Forrest is designed to authenticate with the GitHub API as an App,
-  because they provide a non-expiring authentication method.
-
-  You can create a new GitHub App in the
-  [developer settings](https://github.com/settings/apps).
-
-  You need to:
-
-  - Generate a client secret to use for authentication later.
-  - Provide a webhook URL _with a secret_ that terminates at a reverse proxy
-    on the host running Forrest.
-    See [Setting up nginx](#setting-up-nginx) for an example on how to
-    configure nginx as reverse proxy for Forrest.
-  - Enable Read and Write "Actions", "Administration" (to add jit runners)
-    and "Contents" repository permissions for the app.
-  - Enable "Workflow job" events for the app.
-  - Install the app for your user/app.
-
-- A base image and accompanying setup instructions
-
-  The virtual machines need an initial image to boot from.
-  The image needs to have [cloud-init](https://cloudinit.readthedocs.io/en/latest/)
-  pre-installed and needs to be a raw disk image (e.g. not qcow).
-
-  In addition to the image itself you will need a set of scripts and config
-  files to set up the GitHub action runner software on the machine.
-  See [`contrib/seeds/debian`](contrib/seeds/debian) for a Debian example config.
-
-  A correctly set up Forrest environment directory will look something like this:
-
-  ```bash
-  $ tree env
-  env
-  └── seeds
-      └── debian-12
-          ├── cloud-init
-          │   ├── meta-data
-          │   └── user-data
-          ├── job-config
-          │   └── job.sh
-          └── debian-12-genericcloud-amd64.raw
-  ```
-
-
-- A `config.yaml` file
-
-  The config file contains some information about the host (the amount RAM
-  available for virtual machines and the directory to place things under),
-  how to access GitHub, information about our "machines" and about the
-  repositories Forrest should serve.
-
-  ```yaml
-  host:
-    ram: 120G
-    base_dir: env
-
-  github:
-    app_id: <APP_ID>
-    jwt_key_file: key.pem
-    webhook_secret: <WEBHOOK_SECRET>
-    polling_interval: 15m
-
-  machine_templates:
-    small: &machine-small
-      ram: 7500M
-      cpus: 4
-      disk: 16G
-
-  repositories:
-    hnez:
-      forrest-images:
-        persistence_token: <PERSISTENCE_TOKEN>
-        machines:
-          debian-base:
-            << : *machine-small
-            seed: debian-12
-          debian-yocto:
-            << : *machine-small
-            base: hnez/forrest-images/debian-base
-      forrest:
-        machines:
-          build-on-debian:
-            << : *machine-small
-            base: hnez/forrest-images/debian-base
-  ```
-
-With the setup done we can write our first GitHub workflow using Forrest:
-
-```yaml
-name: demo
-
-on: [pull_request, push]
-
-jobs:
-  demo-debian:
-    runs-on: [self-hosted, forrest, build-debian]
-    steps:
-      - name: Set up runner machine
-        run: |
-          sudo localectl set-locale en_US.UTF-8
-          export DEBIAN_FRONTEND=noninteractive
-          export DPKG_FORCE=confnew
-          sudo -E apt-get update
-          sudo -E apt-get --assume-yes dist-upgrade
-          sudo -E apt-get --assume-yes install git
-      - name: Check out the repository
-        uses: actions/checkout@v4
-      - name: Demo
-        run: echo "Hey there from a machine managed by Forrest!"
-      - name: Persist the disk image
-        env:
-          PERSISTENCE_TOKEN: ${{ secrets.PERSISTENCE_TOKEN }}
-        if: ${{ env.PERSISTENCE_TOKEN != ''  }}
-        run: |
-          sudo fstrim /
-          echo "$PERSISTENCE_TOKEN" > ~/config/persist
-
-  demo-arch:
-    runs-on: [self-hosted, forrest, build-arch]
-    steps:
-      - name: Set up runner machine
-        run: |
-          sudo localectl set-locale en_US.UTF-8
-          sudo pacman --noconfirm --noprogressbar -Syuu
-          sudo pacman --noconfirm --noprogressbar -S git
-      - name: Check out the repository
-        uses: actions/checkout@v4
-      - name: Demo
-        run: echo "Hey there from a machine managed by Forrest!"
-      - name: Persist the disk image
-        env:
-          PERSISTENCE_TOKEN: ${{ secrets.PERSISTENCE_TOKEN }}
-        if: ${{ env.PERSISTENCE_TOKEN != ''  }}
-        run: |
-          sudo fstrim /
-          echo "$PERSISTENCE_TOKEN" > ~/config/persist
-```
-
-You may notice that the job does a lot of setup and post-processing.
-This is because we use very bare disk images to begin with.
-Forrest only installs the GitHub runner software itself onto the machines
-and leaves the rest to the scheduled job.
-
-The final trick is the `PERSISTENCE_TOKEN`.
-It is configured per-repository in your `config.yaml` and is also stored as
-an action secret on GitHub, that is only available to jobs running on your
-protected branches (e.g. `main`).
-
-If a job runs for such a protected branch and decides to persist its current
-disk image, then this disk image will become the new starting disk image for
-subsequent runs of the same machine.
-In this case the `check` machine for the repository.
-This way installed packages and other downloads are already present on the
-machine, speeding up subsequent runs a lot.
-
----
-
-### Setting up nginx
-
-In your nginx config under the `server` section you should add a proxy directive
-to forward requests to Forrest:
+The following diagram illustrates the possible evolution of an image:
 
 ```
-server {
-    listen 443 ssl http2 default_server;
-    listen [::]:443 ssl http2 default_server;
-
-    ...
-
-    location /webhook {
-        proxy_pass http://unix:[ABOLUTE PATH TO YOUR FORREST ENV]/webhook.sock:/webhook;
-        proxy_http_version 1.1;
-    }
-}
+src    machine    run
+ ╻
+ ┣━━━━━━━━━━━━━━━━━┓
+ ┃                 ┠─╴Start of a build job for the main branch of the repository.
+ ┃                 ┃  The disk image is copied using a reflink copy to create a
+ ┃                 ┃  fork of the image that the job can read and write to without
+ ┃                 ┃  affecting the src image.
+ ┃                 ┃
+ ┃                 ┠─╴A virtual machine is started that uses the forked image
+ ┃                 ┃  as disk image.
+ ┋                 ┋
+ ┃                 ┠─╴The job succeeds and provides the correct PERSISTENCE_TOKEN
+ ┃                 ┃  for this repository from its GitHub secrets.
+ ┃        ┏━━━━━━━━┛
+ ┃        ┠──────────╴The disk image left behind by the job becomes the new
+ ┃        ┃           base image for this machine.
+ ┃        ┃
+ ┃        ┣━━━━━━━━┓
+ ┃        ┃        ┠─╴Start of a build job for a pull request.
+ ┃        ┃        ┃  The job can use everything the previous run left behind to
+ ┃        ┃        ┃  speed up the build process.
+ ┋        ┋        ┋
+ ┃        ┃        ┠─╴The job succeeds but can not provide the PERSISTENCE_TOKEN,
+ ┃        ┃        ┃  because secrets are not available to runs on pull requests.
+ ┃        ┃        ┃
+ ┃        ┃        ┞─╴The disk image for this job is removed.
+ ┃        ┃
+ ┋        ┋
 ```
+ 
+The different stages an image can be in are:
 
-Replace `[ABOLUTE PATH TO YOUR FORREST ENV]` with the appropriate path.
+- `src` - A base image, these can for example be provided by a Linux Distribution.
+  It is also possible to use a machine image from _another_ machine as a base image,
+  but we will get to that later in the documentation.
+- `machine` - A base image for a run of a specific machine type.
+  We will get to what a machine type _is_ later in the documentation as well,
+  but for now it just means that later runs will use this image as a base
+  instead of `src`.
+- `run` - The ephermal virtual machine disk image used in a run.
+  The image may be persisted at the end of a run, but could also just be thrown
+  away.
 
-### Debugging a running job
+Documentation
+-------------
 
-All (running) jobs have a `shell.sock` unix domain socket in their run directory
-(e.g. in `[FORREST ENV PATH]/runs/[USER]/[REPO]/[MACHINE TYPE]/[TIMESTAMP]`)
-that can be used to log into the machine using e.g. `socat`:
+The documentation is split into multiple files:
 
-```bash
-$ socat -,rawer,escape=0x1d UNIX-CONNECT:.../shell.sock
-```
+1) Acquiring operating system images suitable for use with Forrest:
 
-> [!NOTE]
-> You need to press enter to get an initial prompt
+   - [Debian](docs/debian-images.md)
+   - [Arch Linux](docs/arch-images.md)
+
+2) [Registering a GitHub App for Forrest](docs/github.md)
+3) [Writing a Forrest Config File](docs/config.md)
+4) [Configuring nginx as Reverse Proxy](docs/nginx.md)
+5) [Writing Workflow Jobs using Forrest](docs/jobs.md)
+6) [Debugging Machines](docs/debugging.md)
 
 ---
 

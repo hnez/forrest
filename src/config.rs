@@ -43,7 +43,7 @@ impl ConfigFile {
 
         // Then we apply merges / overrides like these:
         //
-        // machine_templates:
+        // machine_snippets:
         //   small: &machine-small
         //     ram: 8G
         //     …
@@ -55,13 +55,13 @@ impl ConfigFile {
 
         if let Some(cfg_mapping) = cfg.as_mapping_mut() {
             // Remove all top level fields from the config who's name ends
-            // in `_templates`.
-            // This allows using keys like `machine_templates` which do not
+            // in `_snippets`.
+            // This allows using keys like `machine_snippets` which do not
             // adhere to the syntax.
 
             cfg_mapping.retain(|k, _| {
                 k.as_str()
-                    .map(|k| !k.ends_with("_templates"))
+                    .map(|k| !k.ends_with("_snippets"))
                     .unwrap_or(true)
             });
         }

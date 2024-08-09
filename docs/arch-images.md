@@ -22,7 +22,3 @@ $ qemu-img convert -O raw \
 
 $ rm Arch-Linux-x86_64-cloudimg.qcow2
 ```
-
-Systemd and cloud-init make the Debian and Arch Linux images similar enough
-that the `cloud-init` and `job-config` directories for the Debian images can
-be reused.

@@ -46,9 +46,9 @@ pub struct MachineConfig {
     #[serde(default)]
     pub use_base: SeedBasePolicy,
 
-    pub ram: SizeInBytes,
     pub cpus: u32,
     pub disk: SizeInBytes,
+    pub ram: SizeInBytes,
 
     #[serde(default)]
     pub shared: Vec<ExposedDirectory>,
