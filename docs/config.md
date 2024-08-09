@@ -33,11 +33,10 @@ machine_snippets:
       parameters:
         RUNNER_VERSION: "2.318.0"
         RUNNER_HASH: "28ed88e4cedf0fc93201a901e392a70463dbd0213f2ce9d57a4ab495027f3e2f"
-  cfg-arch: &cfg-arch
-    << : *cfg-template
+
+  os-arch: &os-arch
     base_image: /srv/forrest/images/Arch-Linux-x86_64-cloudimg.img
-  cfg-debian: &cfg-debian
-    << : *cfg-template
+  os-debian: &os-debian
     base_image: /srv/forrest/images/debian-12-generic-amd64.raw
 
   machine-small: &machine-small
@@ -49,36 +48,26 @@ machine_snippets:
     disk: 32G
     ram: 8G
 
-  arch-small: &arch-small
-    << : *cfg-arch
-    << : *machine-small
-  debian-small: &debian-small
-    << : *cfg-debian
-    << : *machine-small
-  debian-medium: &debian-medium
-    << : *cfg-debian
-    << : *machine-medium
-
 repositories:
   hnez:
     forrest-images:
       persistence_token: <PERSISTENCE_TOKEN>
       machines:
         arch-base:
-          << : *arch-small
+          << : [*cfg-template, *os-arch, *machine-small]
           use_base: always
         debian-base:
-          << : *debian-small
+          << : [*cfg-template, *os-debian, *machine-small]
           use_base: always
         debian-yocto:
-          << : *debian-small
+          << : [*cfg-template, *os-debian, *machine-small]
           base_machine: hnez/forrest-images/debian-base
           use_base: always
 
     forrest-test:
       machines:
         test-debian:
-          << : *debian-medium
+          << : [*cfg-template, *os-debian, *machine-medium]
           base_machine: hnez/forrest-images/debian-base
 ```
 
