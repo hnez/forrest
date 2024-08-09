@@ -501,7 +501,14 @@ impl Machine {
                     return;
                 }
 
-                match RunDir::new(self, machines) {
+                // TODO: RunDir calls a method on self that locks inner,
+                // resulting in a deadlock.
+                // This should be solved differently.
+                std::mem::drop(inner);
+                let run_dir = RunDir::new(self, machines);
+                let mut inner = self.inner();
+
+                match run_dir {
                     Ok(run_dir) => inner.run_dir = run_dir,
                     Err(err) => {
                         error!("Failed to set up run dir for {self}: {err}");
