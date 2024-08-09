@@ -73,7 +73,7 @@ where
     Ok(Duration::from_secs(value * multiplier))
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExposedDirectory {
     pub path: PathBuf,
@@ -112,11 +112,20 @@ impl Default for SeedBasePolicy {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Debug, Deserialize)]
+pub struct SetupTemplate {
+    pub path: PathBuf,
+
+    #[serde(default)]
+    pub parameters: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MachineConfig {
-    pub seed: String,
-    pub base: Option<Triplet>,
+    pub base_machine: Option<Triplet>,
+    pub base_image: Option<PathBuf>,
+    pub setup_template: SetupTemplate,
 
     #[serde(default)]
     pub use_base: SeedBasePolicy,

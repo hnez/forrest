@@ -79,7 +79,6 @@ pub(super) struct Machine {
     auth: Arc<Auth>,
     cfg: Arc<ConfigFile>,
     inner: Mutex<Inner>,
-    machine_config: MachineConfig,
     rescheduler: Rescheduler,
     runner_name: String,
     triplet: Triplet,
@@ -156,13 +155,10 @@ impl Machine {
             .and_then(|repos| repos.get(triplet.repository()))
             .and_then(|repo| repo.machines.get(triplet.machine_name()));
 
-        let machine_config = match machine_config {
-            Some(mc) => mc.to_owned(),
-            None => {
-                error!("Got request for unkown machine triplet: {triplet}");
-                return None;
-            }
-        };
+        if machine_config.is_none() {
+            error!("Got request for unkown machine triplet: {triplet}");
+            return None;
+        }
 
         let runner_name = {
             // Build a runner name like "forrest-build-rHCiNOhFdypjtnfj"
@@ -186,7 +182,6 @@ impl Machine {
 
         Some(Arc::new(Self {
             triplet,
-            machine_config,
             rescheduler,
             runner_name,
             auth,
@@ -220,6 +215,23 @@ impl Machine {
         &self.cfg
     }
 
+    pub(super) fn triplet(&self) -> &Triplet {
+        &self.triplet
+    }
+
+    pub(super) fn machine_config(&self) -> &MachineConfig {
+        let cfg = self.cfg();
+        let triplet = self.triplet();
+
+        let machine_config = cfg
+            .repositories
+            .get(triplet.owner())
+            .and_then(|repos| repos.get(triplet.repository()))
+            .and_then(|repo| repo.machines.get(triplet.machine_name()));
+
+        machine_config.unwrap()
+    }
+
     /// The configuration string to pass to the action runner executable.
     pub(super) fn encoded_jit_config(&self) -> Option<String> {
         self.inner()
@@ -240,7 +252,7 @@ impl Machine {
 
     /// Get the amount of RAM (in bytes) the machine would consume if it were started
     pub(super) fn ram_required(&self) -> u64 {
-        self.machine_config.ram.bytes()
+        self.machine_config().ram.bytes()
     }
 
     pub(super) fn runner_name(&self) -> &str {
@@ -262,14 +274,6 @@ impl Machine {
 
     pub(super) fn status(&self) -> Status {
         self.inner().status
-    }
-
-    pub(super) fn machine_config(&self) -> &MachineConfig {
-        &self.machine_config
-    }
-
-    pub(super) fn triplet(&self) -> &Triplet {
-        &self.triplet
     }
 
     /// Register this machine as a JIT GitHub runner
@@ -339,8 +343,10 @@ impl Machine {
 
     /// Spawn the qemu process and wait for its completion
     async fn qemu(&self) -> std::io::Result<()> {
+        let machine_config = self.machine_config();
+
         // Set up virtfs directory forwarding from the host to the machine.
-        let virtfs_args = self.machine_config.shared.iter().flat_map(|dir| {
+        let virtfs_args = machine_config.shared.iter().flat_map(|dir| {
             let mut arg = OsString::new();
 
             let tag = &dir.tag;
@@ -357,8 +363,8 @@ impl Machine {
         // Assemble the complete set of arguments to pass to the qemu command.
         let mut qemu = {
             let inner = self.inner();
-            let ram = self.machine_config.ram.megabytes().to_string();
-            let smp = self.machine_config.cpus.to_string();
+            let ram = machine_config.ram.megabytes().to_string();
+            let smp = machine_config.cpus.to_string();
             let pwd = inner.run_dir.as_ref().unwrap();
 
             let mut qemu = Command::new(QEMU_CMD);

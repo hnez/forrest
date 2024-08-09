@@ -2,7 +2,7 @@ use std::fs::{create_dir_all, File};
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use reflink_copy::reflink;
 
 use crate::config::SeedBasePolicy;
@@ -49,27 +49,6 @@ fn pick_newer<'p>(a: &'p Path, b: &'p Path) -> std::io::Result<&'p Path> {
     }
 }
 
-/// Search for a *.img or *.raw file in the seed directory.
-fn find_seed_image(seed_dir: &Path) -> std::io::Result<PathBuf> {
-    for entry in std::fs::read_dir(seed_dir)? {
-        let entry = entry?;
-        let meta = entry.metadata()?;
-        let name = entry.file_name();
-        let name_bytes = name.as_encoded_bytes();
-
-        if meta.is_file() && (name_bytes.ends_with(b".img") || name_bytes.ends_with(b".raw")) {
-            return Ok(entry.path());
-        }
-    }
-
-    let msg = format!(
-        "No *.img or *.raw disk image found in seed directory {}",
-        seed_dir.display()
-    );
-
-    Err(std::io::Error::new(ErrorKind::NotFound, msg))
-}
-
 impl RunDir {
     /// Create a directory for a machine run and populate it to match our qemu arguments
     ///
@@ -90,18 +69,23 @@ impl RunDir {
 
         let base_dir = &cfg.host.base_dir;
 
-        let seed_dir = cfg.host.base_dir.join("seeds").join(&machine_config.seed);
+        let machine_image = triplet.machine_image_path(base_dir);
 
-        let base_image = match &machine_config.base {
+        let base_image = match &machine_config.base_machine {
             Some(base_triplet) if machines.contains_key(base_triplet) => {
                 info!("Delaying the startup of {machine} because its base {base_triplet} is currently running");
                 return Ok(None);
             }
             Some(base_triplet) => base_triplet.machine_image_path(base_dir),
-            None => find_seed_image(&seed_dir)?,
+            None => match &machine_config.base_image {
+                Some(base_image) => base_image.clone(),
+                None => {
+                    warn!("Neither `base_machine` nor `base_image` configured for {machine}.");
+                    warn!("Falling back to machine image");
+                    machine_image.clone()
+                }
+            },
         };
-
-        let machine_image = triplet.machine_image_path(base_dir);
 
         let image = match machine_config.use_base {
             SeedBasePolicy::IfNewer => pick_newer(&base_image, &machine_image)?,
@@ -146,36 +130,49 @@ impl RunDir {
             disk_file.set_len(target_disk_size)?;
         }
 
-        let substitutions = &[
-            ("<REPO_OWNER>", triplet.owner()),
-            ("<REPO_NAME>", triplet.repository()),
-            ("<MACHINE_NAME>", triplet.machine_name()),
-            ("<JITCONFIG>", encoded_jit_config.as_str()),
-        ];
+        let template = &machine_config.setup_template;
+
+        let substitutions = {
+            let mut sub = vec![
+                ("REPO_OWNER", triplet.owner()),
+                ("REPO_NAME", triplet.repository()),
+                ("MACHINE_NAME", triplet.machine_name()),
+                ("JITCONFIG", encoded_jit_config.as_str()),
+            ];
+
+            let parameters = template
+                .parameters
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()));
+
+            sub.extend(parameters);
+
+            sub
+        };
 
         let _cloud_init = {
             let cloud_init_path = run_dir.join("cloud-init.img");
-            let cloud_init_template_path = seed_dir.join("cloud-init");
+            let cloud_init_template_path = template.path.join("cloud-init");
 
             ConfigFs::new(
                 cloud_init_path,
                 CLOUD_INIT_IMAGE_SIZE,
                 CLOUD_INIT_IMAGE_LABEL,
                 cloud_init_template_path,
-                substitutions,
+                &substitutions,
             )?
         };
 
         let job_config = {
             let job_config_path = run_dir.join("job-config.img");
-            let job_config_template_path = seed_dir.join("job-config");
+            let job_config_template_path = template.path.join("job-config");
 
             ConfigFs::new(
                 job_config_path,
                 JOB_CONFIG_IMAGE_SIZE,
                 JOB_CONFIG_IMAGE_LABEL,
                 job_config_template_path,
-                substitutions,
+                &substitutions,
             )?
         };
 

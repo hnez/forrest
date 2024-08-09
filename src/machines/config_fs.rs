@@ -88,7 +88,7 @@ impl ConfigFs {
             let mut content = std::fs::read_to_string(path)?;
 
             for (from, to) in substitutions {
-                content = content.replace(from, to);
+                content = content.replace(&format!("<{from}>"), to);
             }
 
             let mut file = root_dir.create_file(name)?;
