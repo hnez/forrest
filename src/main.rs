@@ -1,4 +1,5 @@
 mod api;
+mod artifacts;
 mod auth;
 mod config;
 mod ingres;
@@ -43,7 +44,10 @@ async fn forrest() -> anyhow::Result<()> {
     let webhook = ingres::WebhookHandler::new(config.clone(), auth.clone(), job_manager.clone());
 
     // TODO TODO TODO
-    let api = api::Api::new(config.clone(), webhook)?;
+    let artifacts = artifacts::ArtifactsHandler::new(machine_manager.clone());
+
+    // TODO TODO TODO
+    let api = api::Api::new(config.clone(), artifacts, webhook)?;
 
     // Our secondary source of information are periodic polls of the GitHub API.
     // These come in handy at startup or after network outages when we may have

@@ -74,6 +74,14 @@ impl Manager {
         machines
     }
 
+    pub fn machine_by_run_token(&self, run_token: &str) -> Option<Arc<Machine>> {
+        self.machines()
+            .values()
+            .flat_map(|machines_vec| machines_vec.iter())
+            .find(|machine| machine.run_token() == run_token)
+            .cloned()
+    }
+
     pub fn status_feedback(
         &self,
         triplet: &Triplet,
@@ -81,9 +89,9 @@ impl Manager {
         online: Option<bool>,
         busy: bool,
     ) -> bool {
-        let mut machines = self.machines();
+        let machines = self.machines();
 
-        let machine = machines.get_mut(triplet).and_then(|triplet_machines| {
+        let machine = machines.get(triplet).and_then(|triplet_machines| {
             triplet_machines
                 .iter()
                 .find(|machine| machine.runner_name() == runner_name)
