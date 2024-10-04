@@ -31,6 +31,16 @@ pub struct ExposedDirectory {
     pub writable: bool,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Artifact {
+    pub name: String,
+    pub path: String,
+    pub url: String,
+    pub quota: SizeInBytes,
+    pub token: Option<String>,
+}
+
 impl Default for SeedBasePolicy {
     fn default() -> Self {
         Self::IfNewer
@@ -53,6 +63,9 @@ pub struct MachineConfig {
 
     #[serde(default)]
     pub shared: Vec<ExposedDirectory>,
+
+    #[serde(default)]
+    pub artifacts: Vec<Artifact>,
 }
 
 #[derive(Deserialize)]
